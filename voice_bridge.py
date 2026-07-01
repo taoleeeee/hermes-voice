@@ -315,28 +315,42 @@ class VoiceHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = urlparse(self.path).path
-        if path == "/health":
-            self._handle_health()
-        else:
-            self.send_response(404)
-            self.send_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "not found"}).encode())
+        try:
+            path = urlparse(self.path).path
+            if path == "/health":
+                self._handle_health()
+            else:
+                self.send_response(404)
+                self.send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "not found"}).encode())
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            log.exception(f"Unhandled error in GET: {e}")
 
     def do_POST(self):
-        path = urlparse(self.path).path
-        if path == "/voice":
-            self._handle_voice()
-        elif path == "/chat":
-            self._handle_chat()
-        else:
-            self.send_response(404)
-            self.send_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "not found"}).encode())
+        try:
+            path = urlparse(self.path).path
+            if path == "/voice":
+                self._handle_voice()
+            elif path == "/chat":
+                self._handle_chat()
+            else:
+                self.send_response(404)
+                self.send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "not found"}).encode())
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            log.warning("Client disconnected during POST")
+        except Exception as e:
+            log.exception(f"Unhandled error in POST handler: {e}")
+            try:
+                self._send_json(500, {"error": str(e)})
+            except Exception:
+                pass
 
     def _handle_health(self):
         import urllib.request
@@ -465,6 +479,10 @@ class VoiceHandler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+    allow_reuse_port = True
+
 def main():
     log.info(f"Voice Bridge starting on {LISTEN_HOST}:{LISTEN_PORT}")
     log.info(f"  Hermes API: {P6P_HERMES_API} (key: {'set' if P6P_API_KEY else 'NOT SET'})")
@@ -472,8 +490,7 @@ def main():
     whisper_status = "found" if os.path.exists(WHISPER_BIN) else "NOT FOUND"
     log.info(f"  Local whisper: {whisper_status}")
     log.info(f"  TTS voice: {EDGE_TTS_VOICE}")
-
-    server = HTTPServer((LISTEN_HOST, LISTEN_PORT), VoiceHandler)
+    server = ReusableHTTPServer((LISTEN_HOST, LISTEN_PORT), VoiceHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
