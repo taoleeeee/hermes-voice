@@ -424,7 +424,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     @JavascriptInterface
     fun getBridgeUrl(): String {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-        return prefs.getString("bridge_url", "http://100.67.204.21:8700") ?: "http://100.67.204.21:8700"
+        return prefs.getString("bridge_url", "http://192.168.1.100:8700") ?: "http://192.168.1.100:8700"
     }
 
     @JavascriptInterface
