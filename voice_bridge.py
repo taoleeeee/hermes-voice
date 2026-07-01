@@ -469,7 +469,10 @@ class VoiceHandler(BaseHTTPRequestHandler):
                 result = process_voice(audio_data, content_type)
 
             def safe(text, max_len=400):
-                return text.replace("\n", " ").replace("\r", "")[:max_len]
+                # Strip non-latin-1 chars (HTTP headers are latin-1 only)
+                clean = text.replace("\n", " ").replace("\r", "")
+                clean = clean.encode("ascii", "replace").decode("ascii")
+                return clean[:max_len]
 
             if skip_tts:
                 # Return JSON with text + timings
