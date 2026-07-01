@@ -4,227 +4,402 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Hermes Voice</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body {
   width: 100%; height: 100%;
-  background: #0a0a0f;
-  color: #e0e0e0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #06060c;
+  color: #f1f5f9;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
+  position: relative;
 }
+
+/* Ambient Background Glow */
+body::before {
+  content: '';
+  position: absolute;
+  top: -50%; left: -50%; width: 200%; height: 200%;
+  background: radial-gradient(circle at 30% 30%, rgba(56, 189, 248, 0.04) 0%, transparent 40%),
+              radial-gradient(circle at 70% 70%, rgba(52, 211, 153, 0.03) 0%, transparent 45%),
+              radial-gradient(circle at 50% 10%, rgba(139, 92, 246, 0.02) 0%, transparent 35%);
+  pointer-events: none;
+  z-index: 0;
+}
+
 .container {
   display: flex; flex-direction: column;
   height: 100%; width: 100%;
   align-items: center; justify-content: space-between;
   padding: 20px;
+  position: relative;
+  z-index: 1;
 }
+
 .header {
-  text-align: center; padding-top: 40px;
+  text-align: center; padding-top: 35px;
 }
 .header h1 {
-  font-size: 22px; font-weight: 300;
-  color: #a0a0b0; letter-spacing: 2px;
+  font-size: 22px; font-weight: 500;
+  color: #ffffff; letter-spacing: 3px;
   text-transform: uppercase;
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.15);
 }
 .status-text {
-  font-size: 14px; color: #606070;
-  margin-top: 8px; transition: color 0.3s;
+  font-size: 12px; color: rgba(255, 255, 255, 0.35);
+  margin-top: 8px; font-weight: 400;
+  letter-spacing: 1.5px;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
 }
-.status-text.listening { color: #4fc3f7; }
-.status-text.processing { color: #ffb74d; }
-.status-text.speaking { color: #81c784; }
-.status-text.error { color: #e57373; }
+.status-text.listening { color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.4); }
+.status-text.processing { color: #fb923c; text-shadow: 0 0 10px rgba(251,146,60,0.4); }
+.status-text.speaking { color: #34d399; text-shadow: 0 0 10px rgba(52,211,153,0.4); }
+.status-text.error { color: #f87171; text-shadow: 0 0 10px rgba(248,113,113,0.4); }
 
 .center-area {
   display: flex; align-items: center; justify-content: center;
-  flex: 1; width: 100%; position: relative;
+  flex: 1.2; width: 100%; position: relative;
 }
 .pulse-ring {
-  position: absolute; width: 220px; height: 220px;
-  border-radius: 50%; border: 2px solid rgba(79, 195, 247, 0.2);
+  position: absolute; width: 210px; height: 210px;
+  border-radius: 50%; border: 2px solid rgba(56, 189, 248, 0.15);
   opacity: 0; pointer-events: none;
+  transition: border-color 0.5s;
 }
 .pulse-ring.active {
-  animation: pulse 2s ease-out infinite;
+  animation: pulse 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+.pulse-ring.speaking {
+  border-color: rgba(52, 211, 153, 0.15);
 }
 @keyframes pulse {
-  0% { transform: scale(0.8); opacity: 0.6; }
-  100% { transform: scale(1.8); opacity: 0; }
+  0% { transform: scale(0.85); opacity: 0.8; }
+  100% { transform: scale(1.6); opacity: 0; }
 }
+
 .main-button {
-  width: 180px; height: 180px;
+  width: 156px; height: 156px;
   border-radius: 50%; border: none;
-  background: radial-gradient(circle at 35% 35%, #1a237e, #0d1b3e);
-  box-shadow: 0 0 40px rgba(79, 195, 247, 0.15), inset 0 0 30px rgba(79, 195, 247, 0.05);
+  background: radial-gradient(circle at 35% 35%, #18182d, #0b0b14);
+  box-shadow: 0 15px 35px rgba(0,0,0,0.5), 
+              0 0 0 1px rgba(255,255,255,0.04),
+              inset 0 2px 4px rgba(255,255,255,0.06);
   cursor: pointer; position: relative; z-index: 1;
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.3s ease;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .main-button:active {
-  transform: scale(0.95);
+  transform: scale(0.93);
 }
 .main-button.listening {
-  background: radial-gradient(circle at 35% 35%, #1565c0, #0d47a1);
-  box-shadow: 0 0 60px rgba(79, 195, 247, 0.4), inset 0 0 30px rgba(79, 195, 247, 0.1);
+  background: radial-gradient(circle at 35% 35%, #0284c7, #075985);
+  box-shadow: 0 0 40px rgba(56, 189, 248, 0.4), 
+              0 15px 35px rgba(0,0,0,0.5),
+              inset 0 2px 4px rgba(255,255,255,0.15);
 }
 .main-button.processing {
-  background: radial-gradient(circle at 35% 35%, #e65100, #bf360c);
-  box-shadow: 0 0 60px rgba(255, 183, 77, 0.4), inset 0 0 30px rgba(255, 183, 77, 0.1);
+  background: radial-gradient(circle at 35% 35%, #ea580c, #9a3412);
+  box-shadow: 0 0 40px rgba(251, 146, 60, 0.4), 
+              0 15px 35px rgba(0,0,0,0.5),
+              inset 0 2px 4px rgba(255,255,255,0.15);
 }
 .main-button.speaking {
-  background: radial-gradient(circle at 35% 35%, #2e7d32, #1b5e20);
-  box-shadow: 0 0 60px rgba(129, 199, 132, 0.4), inset 0 0 30px rgba(129, 199, 132, 0.1);
+  background: radial-gradient(circle at 35% 35%, #059669, #065f46);
+  box-shadow: 0 0 40px rgba(52, 211, 153, 0.4), 
+              0 15px 35px rgba(0,0,0,0.5),
+              inset 0 2px 4px rgba(255,255,255,0.15);
 }
+
 .main-button-icon {
-  width: 48px; height: 48px; fill: #c0c0d0;
-  transition: fill 0.3s;
+  width: 42px; height: 42px; fill: rgba(255, 255, 255, 0.6);
+  transition: fill 0.3s, transform 0.3s;
 }
-.main-button.listening .main-button-icon { fill: #4fc3f7; }
-.main-button.processing .main-button-icon { fill: #ffb74d; }
-.main-button.speaking .main-button-icon { fill: #81c784; }
+.main-button.listening .main-button-icon { fill: #ffffff; transform: scale(1.1); }
+.main-button.processing .main-button-icon { fill: #ffffff; }
+.main-button.speaking .main-button-icon { fill: #ffffff; }
 
 .waveform-container {
   position: absolute; width: 260px; height: 60px;
-  opacity: 0; transition: opacity 0.3s;
+  opacity: 0; transition: opacity 0.4s ease;
   pointer-events: none;
+  display: flex; align-items: flex-end; justify-content: space-between;
 }
 .waveform-container.active { opacity: 1; }
 .waveform-bar {
-  position: absolute; bottom: 50%; width: 3px;
-  background: #4fc3f7; border-radius: 2px;
+  width: 5px; height: 8px;
+  background: #38bdf8; border-radius: 4px;
+  transition: transform 0.08s ease, background-color 0.3s ease;
   transform-origin: bottom center;
-  animation: waveform 0.8s ease-in-out infinite alternate;
-}
-.waveform-bar:nth-child(1) { left: 10%; height: 15px; animation-delay: 0s; }
-.waveform-bar:nth-child(2) { left: 20%; height: 25px; animation-delay: 0.1s; }
-.waveform-bar:nth-child(3) { left: 30%; height: 20px; animation-delay: 0.2s; }
-.waveform-bar:nth-child(4) { left: 40%; height: 35px; animation-delay: 0.15s; }
-.waveform-bar:nth-child(5) { left: 50%; height: 30px; animation-delay: 0.05s; }
-.waveform-bar:nth-child(6) { left: 60%; height: 40px; animation-delay: 0.25s; }
-.waveform-bar:nth-child(7) { left: 70%; height: 20px; animation-delay: 0.1s; }
-.waveform-bar:nth-child(8) { left: 80%; height: 30px; animation-delay: 0.2s; }
-.waveform-bar:nth-child(9) { left: 90%; height: 15px; animation-delay: 0.3s; }
-@keyframes waveform {
-  0% { transform: scaleY(0.3); }
-  100% { transform: scaleY(1); }
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
 }
 .waveform-container.bottom {
-  bottom: -80px;
+  bottom: -70px;
 }
 .waveform-container.top {
-  top: -80px;
+  top: -70px;
   transform: rotate(180deg);
 }
-.waveform-container.speating .waveform-bar {
-  background: #81c784;
+.waveform-container.speaking .waveform-bar {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.3);
 }
 
-.transcript-area {
-  width: 100%; max-width: 400px;
-  text-align: center; padding: 10px 20px;
-  min-height: 60px;
+/* Simulated wave animation for speaking state */
+.waveform-container.speaking .waveform-bar {
+  animation: speakingWave 1s ease-in-out infinite alternate;
 }
-.transcript-text {
-  font-size: 15px; color: #808090;
-  line-height: 1.5; max-height: 120px;
-  overflow-y: auto; word-wrap: break-word;
+.waveform-container:not(.speaking) .waveform-bar {
+  animation: none;
 }
-.transcript-text.user { color: #4fc3f7; }
-.transcript-text.assistant { color: #81c784; }
+@keyframes speakingWave {
+  0% { transform: scaleY(0.2); }
+  100% { transform: scaleY(1.3); }
+}
+.waveform-container.speaking .waveform-bar:nth-child(1) { animation-delay: 0.1s; animation-duration: 0.7s; }
+.waveform-container.speaking .waveform-bar:nth-child(2) { animation-delay: 0.3s; animation-duration: 0.9s; }
+.waveform-container.speaking .waveform-bar:nth-child(3) { animation-delay: 0.0s; animation-duration: 0.8s; }
+.waveform-container.speaking .waveform-bar:nth-child(4) { animation-delay: 0.4s; animation-duration: 1.0s; }
+.waveform-container.speaking .waveform-bar:nth-child(5) { animation-delay: 0.2s; animation-duration: 0.6s; }
+.waveform-container.speaking .waveform-bar:nth-child(6) { animation-delay: 0.5s; animation-duration: 0.85s; }
+.waveform-container.speaking .waveform-bar:nth-child(7) { animation-delay: 0.15s; animation-duration: 0.75s; }
+.waveform-container.speaking .waveform-bar:nth-child(8) { animation-delay: 0.35s; animation-duration: 0.95s; }
+.waveform-container.speaking .waveform-bar:nth-child(9) { animation-delay: 0.25s; animation-duration: 0.8s; }
+
+/* Chat History UI */
+.chat-area {
+  width: 100%; max-width: 420px;
+  flex: 1.1;
+  display: flex; flex-direction: column;
+  justify-content: flex-end;
+  padding: 10px 20px;
+  overflow: hidden;
+  position: relative;
+}
+.chat-history {
+  width: 100%;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+.chat-history::-webkit-scrollbar {
+  width: 3px;
+}
+.chat-history::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-history::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 10px;
+}
+.chat-bubble {
+  max-width: 85%;
+  padding: 12px 16px;
+  border-radius: 18px;
+  font-size: 14.5px;
+  line-height: 1.45;
+  word-wrap: break-word;
+  animation: bubble-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.chat-bubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.2) 0%, rgba(2, 132, 199, 0.1) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: #f0f9ff;
+  border-bottom-right-radius: 4px;
+}
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(4, 120, 87, 0.08) 100%);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  color: #ecfdf5;
+  border-bottom-left-radius: 4px;
+}
 
 .bottom-bar {
   display: flex; align-items: center; justify-content: space-around;
   width: 100%; max-width: 400px;
-  padding: 20px 0 30px;
+  padding: 15px 10px 30px;
+  opacity: 0.4;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
 }
+.bottom-bar.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .control-btn {
-  width: 56px; height: 56px;
-  border-radius: 50%; border: none;
-  background: rgba(255,255,255,0.06);
+  width: 52px; height: 52px;
+  border-radius: 50%; border: 1px solid rgba(255,255,255,0.04);
+  background: rgba(255,255,255,0.02);
   display: flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: all 0.2s;
+  cursor: pointer; transition: all 0.2s ease;
   position: relative;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
 .control-btn:active { transform: scale(0.9); }
 .control-btn.active {
-  background: rgba(79, 195, 247, 0.2);
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.15);
 }
 .control-btn svg {
-  width: 24px; height: 24px; fill: #808090;
+  width: 20px; height: 20px; fill: rgba(255,255,255,0.35);
   transition: fill 0.2s;
 }
-.control-btn.active svg { fill: #4fc3f7; }
+.control-btn.active svg { fill: #38bdf8; }
 .control-btn .label {
   position: absolute; bottom: -18px;
-  font-size: 10px; color: #505060;
+  font-size: 9px; color: rgba(255,255,255,0.25);
+  font-weight: 500;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
 }
 .end-call-btn {
-  background: rgba(229, 57, 53, 0.15) !important;
+  background: rgba(239, 68, 68, 0.08) !important;
+  border-color: rgba(239, 68, 68, 0.25) !important;
 }
-.end-call-btn svg { fill: #e53935 !important; }
+.end-call-btn svg { fill: #ef4444 !important; }
+.end-call-btn:active {
+  background: rgba(239, 68, 68, 0.15) !important;
+}
 
+/* Settings Overlay */
 .settings-overlay {
   display: none; position: fixed;
   top: 0; left: 0; width: 100%; height: 100%;
-  background: rgba(0,0,0,0.9); z-index: 100;
+  background: rgba(4, 4, 8, 0.96); z-index: 100;
+  backdrop-filter: blur(15px);
   flex-direction: column; align-items: center;
   justify-content: center; padding: 30px;
 }
 .settings-overlay.visible { display: flex; }
 .settings-overlay h2 {
-  font-size: 20px; font-weight: 300;
-  color: #a0a0b0; margin-bottom: 30px;
-  letter-spacing: 1px;
+  font-size: 20px; font-weight: 500;
+  color: #ffffff; margin-bottom: 25px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  text-shadow: 0 0 15px rgba(255,255,255,0.1);
+}
+.settings-container {
+  width: 100%; max-width: 360px;
+  max-height: 70vh; overflow-y: auto;
+  padding-right: 5px;
+}
+.settings-container::-webkit-scrollbar {
+  width: 3px;
+}
+.settings-container::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 10px;
 }
 .settings-field {
-  width: 100%; max-width: 360px; margin-bottom: 20px;
+  width: 100%; margin-bottom: 18px;
 }
 .settings-field label {
-  display: block; font-size: 12px;
-  color: #606070; margin-bottom: 8px;
+  display: block; font-size: 10px;
+  color: rgba(255, 255, 255, 0.4); margin-bottom: 6px;
   text-transform: uppercase; letter-spacing: 1px;
+  font-weight: 600;
 }
-.settings-field input {
-  width: 100%; padding: 14px 16px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 10px; color: #e0e0e0;
-  font-size: 15px; outline: none;
+.settings-field input[type="text"],
+.settings-field input[type="number"] {
+  width: 100%; padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px; color: #ffffff;
+  font-size: 14px; outline: none;
+  font-family: inherit;
+  transition: border-color 0.2s;
 }
-.settings-field input:focus {
-  border-color: #4fc3f7;
+.settings-field input[type="text"]:focus,
+.settings-field input[type="number"]:focus {
+  border-color: #38bdf8;
 }
+
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 18px;
+  width: 100%;
+}
+.settings-row label {
+  font-size: 13px; color: rgba(255,255,255,0.7);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Switch */
+.switch {
+  position: relative; display: inline-block;
+  width: 46px; height: 24px;
+}
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: rgba(255,255,255,0.08);
+  transition: .3s; border-radius: 34px;
+  border: 1px solid rgba(255,255,255,0.04);
+}
+.slider:before {
+  position: absolute; content: "";
+  height: 16px; width: 16px;
+  left: 3px; bottom: 3px;
+  background-color: rgba(255,255,255,0.5);
+  transition: .3s; border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: #0284c7;
+}
+input:checked + .slider:before {
+  transform: translateX(22px);
+  background-color: #ffffff;
+}
+
 .settings-btn {
-  padding: 14px 40px; border: none;
-  border-radius: 25px; background: #1565c0;
-  color: white; font-size: 15px;
+  width: 100%; padding: 12px; border: none;
+  border-radius: 10px; background: #0284c7;
+  color: white; font-size: 14px; font-weight: 500;
   cursor: pointer; margin-top: 10px;
+  font-family: inherit;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
+  transition: background-color 0.2s;
 }
-.settings-btn:active { opacity: 0.8; }
+.settings-btn:active { background: #0369a1; }
 
 .gear-btn {
-  position: absolute; top: 16px; right: 16px;
-  width: 40px; height: 40px; border: none;
-  background: rgba(255,255,255,0.05);
+  position: absolute; top: 22px; right: 22px;
+  width: 38px; height: 38px; border: none;
+  background: rgba(255,255,255,0.02);
   border-radius: 50%; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   z-index: 10;
+  border: 1px solid rgba(255,255,255,0.04);
 }
-.gear-btn svg { width: 20px; height: 20px; fill: #505060; }
+.gear-btn svg { width: 18px; height: 18px; fill: rgba(255,255,255,0.3); }
 
 .debug-log {
   display: none; position: fixed;
   bottom: 100px; left: 10px; right: 10px;
-  max-height: 200px; overflow-y: auto;
-  background: rgba(0,0,0,0.85);
+  max-height: 160px; overflow-y: auto;
+  background: rgba(0,0,0,0.9);
   padding: 10px; border-radius: 8px;
-  font-size: 11px; font-family: monospace;
-  color: #606070; z-index: 50;
+  font-size: 10px; font-family: monospace;
+  color: #64748b; z-index: 50;
+  border: 1px solid rgba(255,255,255,0.05);
 }
 .debug-log.visible { display: block; }
 </style>
@@ -234,7 +409,7 @@ html, body {
 <div class="container">
   <div class="header">
     <h1>Hermes Voice</h1>
-    <div class="status-text" id="statusText">Tap to start</div>
+    <div class="status-text" id="statusText">Tap to connect</div>
   </div>
 
   <div class="center-area">
@@ -246,7 +421,7 @@ html, body {
       <div class="waveform-bar"></div><div class="waveform-bar"></div>
       <div class="waveform-bar"></div>
     </div>
-    <button class="main-button" id="mainButton" onclick="toggleRecording()">
+    <button class="main-button" id="mainButton" onclick="handleCentralTap()">
       <svg class="main-button-icon" viewBox="0 0 24 24">
         <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
       </svg>
@@ -260,11 +435,11 @@ html, body {
     </div>
   </div>
 
-  <div class="transcript-area">
-    <div class="transcript-text" id="transcript"></div>
+  <div class="chat-area">
+    <div class="chat-history" id="chatHistory"></div>
   </div>
 
-  <div class="bottom-bar">
+  <div class="bottom-bar" id="bottomBar">
     <button class="control-btn" id="muteBtn" onclick="toggleMute()">
       <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5z"/></svg>
       <span class="label">Mute</span>
@@ -290,25 +465,49 @@ html, body {
 
 <div class="settings-overlay" id="settingsOverlay">
   <h2>Settings</h2>
-  <div class="settings-field">
-    <label>Bridge Server URL</label>
-    <input type="text" id="bridgeUrlInput" placeholder="http://100.67.204.21:8700">
+  <div class="settings-container">
+    <div class="settings-field">
+      <label>Bridge Server URL</label>
+      <input type="text" id="bridgeUrlInput" placeholder="http://100.67.204.21:8700">
+    </div>
+    
+    <div class="settings-row">
+      <label for="vadToggle">Hands-Free (Auto VAD)</label>
+      <label class="switch">
+        <input type="checkbox" id="vadToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="settings-field">
+      <label>Silence Duration (ms)</label>
+      <input type="number" id="silenceDurationInput" placeholder="1500" min="500" max="5000">
+    </div>
+
+    <div class="settings-field">
+      <label>Speech Threshold (Volume)</label>
+      <input type="number" id="speechThresholdInput" placeholder="1000" min="100" max="5000">
+    </div>
+    
+    <button class="settings-btn" onclick="saveSettings()">Save</button>
+    <button class="settings-btn" style="background:rgba(255,255,255,0.06);color:#f1f5f9;margin-top:10px;box-shadow:none;" onclick="closeSettings()">Cancel</button>
   </div>
-  <button class="settings-btn" onclick="saveSettings()">Save</button>
-  <button class="settings-btn" style="background:#333;margin-top:10px" onclick="closeSettings()">Cancel</button>
 </div>
 
 <div class="debug-log" id="debugLog"></div>
 
 <script>
 const state = {
-  status: 'idle', // idle, listening, processing, speaking
+  status: 'idle', // idle, listening, processing, speaking, error
   isRecording: false,
   isMuted: false,
   speakerOn: false,
   bluetoothOn: false,
   bridgeUrl: 'http://100.67.204.21:8700',
-  conversationHistory: []
+  vadEnabled: false,
+  silenceDuration: 1500,
+  speechThreshold: 1000,
+  callSessionActive: false
 };
 
 const mainBtn = document.getElementById('mainButton');
@@ -316,22 +515,67 @@ const statusText = document.getElementById('statusText');
 const pulseRing = document.getElementById('pulseRing');
 const waveformTop = document.getElementById('waveformTop');
 const waveformBottom = document.getElementById('waveformBottom');
-const transcript = document.getElementById('transcript');
+const chatHistory = document.getElementById('chatHistory');
+const bottomBar = document.getElementById('bottomBar');
 
 function setStatus(s, text) {
   state.status = s;
   mainBtn.className = 'main-button' + (s !== 'idle' ? ' ' + s : '');
   statusText.className = 'status-text' + (s !== 'idle' ? ' ' + s : '');
   statusText.textContent = text;
-  pulseRing.className = 'pulse-ring' + (s === 'listening' || s === 'speaking' ? ' active' : '');
-  waveformTop.className = 'waveform-container top' + (s === 'listening' ? ' active' : '') + (s === 'speaking' ? ' active spating' : '');
+  pulseRing.className = 'pulse-ring' + (s === 'listening' || s === 'speaking' ? ' active' : '') + (s === 'speaking' ? ' speaking' : '');
+  waveformTop.className = 'waveform-container top' + (s === 'listening' ? ' active' : '') + (s === 'speaking' ? ' active speaking' : '');
   waveformBottom.className = 'waveform-container bottom' + (s === 'listening' ? ' active' : '') + (s === 'speaking' ? ' active speaking' : '');
+}
+
+function initSettings() {
+  try {
+    state.bridgeUrl = AudioBridge.getBridgeUrl();
+    state.vadEnabled = AudioBridge.isVadEnabled();
+    state.silenceDuration = AudioBridge.getSilenceDuration();
+    state.speechThreshold = AudioBridge.getSpeechThreshold();
+    
+    log('Native config loaded. VAD=' + state.vadEnabled + ', URL=' + state.bridgeUrl);
+  } catch(e) {
+    log('Failed to load native settings: ' + e.message);
+  }
+}
+
+function startCallSession() {
+  state.callSessionActive = true;
+  bottomBar.classList.add('active');
+  try {
+    AudioBridge.startForegroundService();
+    log('Foreground service started');
+  } catch(e) {
+    log('Error starting foreground service: ' + e.message);
+  }
+}
+
+function handleCentralTap() {
+  if (!state.callSessionActive) {
+    // Start session on first tap
+    startCallSession();
+  }
+  toggleRecording();
 }
 
 function toggleRecording() {
   if (state.isRecording) {
     stopAndSend();
   } else {
+    if (state.isMuted) {
+      log('Cannot record while muted');
+      setStatus('error', 'Microphone is muted');
+      setTimeout(() => {
+        if (state.callSessionActive) {
+          setStatus('idle', 'Connected');
+        } else {
+          setStatus('idle', 'Tap to connect');
+        }
+      }, 1500);
+      return;
+    }
     startListening();
   }
 }
@@ -363,9 +607,20 @@ function stopAndSend() {
   try {
     const audioBase64 = AudioBridge.stopRecording();
     if (!audioBase64) {
-      setStatus('idle', 'No audio captured');
+      if (state.callSessionActive) {
+        setStatus('idle', 'Connected');
+      } else {
+        setStatus('idle', 'Tap to connect');
+      }
       return;
     }
+    
+    if (state.isMuted) {
+      log('Audio captured but muted, skipping send.');
+      setStatus('idle', 'Connected');
+      return;
+    }
+    
     log('Audio captured, sending to bridge...');
     sendToBridge(audioBase64);
   } catch(e) {
@@ -390,14 +645,14 @@ async function sendToBridge(audioBase64) {
       throw new Error('Server returned ' + response.status);
     }
 
-    const transcript = response.headers.get('X-Transcript') || '';
+    const userTranscript = response.headers.get('X-Transcript') || '';
     const assistantResponse = response.headers.get('X-Response') || '';
 
-    if (transcript) {
-      addTranscript('user', transcript);
+    if (userTranscript) {
+      addMessage('user', userTranscript);
     }
     if (assistantResponse) {
-      addTranscript('assistant', assistantResponse);
+      addMessage('assistant', assistantResponse);
     }
 
     const audioBlob = await response.blob();
@@ -413,9 +668,49 @@ async function sendToBridge(audioBase64) {
   } catch(e) {
     log('Bridge error: ' + e.message);
     setStatus('error', 'Connection error');
-    setTimeout(() => setStatus('idle', 'Tap to start'), 3000);
+    setTimeout(() => {
+      if (state.callSessionActive) {
+        setStatus('idle', 'Connected');
+      } else {
+        setStatus('idle', 'Tap to connect');
+      }
+    }, 3000);
   }
 }
+
+// Native volume and activity callbacks
+window.onMicVolume = function(rms) {
+  // rms is typically 0 - 15000 for speech
+  const normalized = Math.min(1.0, rms / 8000.0);
+  
+  const updateBars = (containerId) => {
+    const bars = document.querySelectorAll('#' + containerId + ' .waveform-bar');
+    bars.forEach((bar, index) => {
+      // Create a wave visual effect across the index
+      const positionWeight = 0.3 + 0.7 * Math.sin((index / (bars.length - 1)) * Math.PI);
+      const scale = 0.15 + normalized * 1.6 * positionWeight;
+      bar.style.transform = `scaleY(${Math.min(2.0, scale)})`;
+    });
+  };
+
+  if (state.status === 'listening') {
+    updateBars('waveformTop');
+    updateBars('waveformBottom');
+  }
+};
+
+window.onSpeechStarted = function() {
+  if (state.status === 'listening') {
+    statusText.textContent = 'Speaking...';
+  }
+};
+
+window.onSilenceDetected = function() {
+  log('VAD: Silence detected, auto-sending...');
+  if (state.isRecording) {
+    stopAndSend();
+  }
+};
 
 function onAudioPlayStarted() {
   log('Audio playback started');
@@ -423,27 +718,52 @@ function onAudioPlayStarted() {
 
 function onAudioPlayCompleted() {
   log('Audio playback completed');
-  setStatus('idle', 'Tap to start');
+  if (state.callSessionActive && state.vadEnabled && !state.isMuted) {
+    log('VAD: Auto-starting next listening turn...');
+    startListening();
+  } else if (state.callSessionActive) {
+    setStatus('idle', 'Connected');
+  } else {
+    setStatus('idle', 'Tap to connect');
+  }
 }
 
 function onAudioError(msg) {
   log('Audio error: ' + msg);
   setStatus('error', 'Playback error');
-  setTimeout(() => setStatus('idle', 'Tap to start'), 3000);
+  setTimeout(() => {
+    if (state.callSessionActive) {
+      setStatus('idle', 'Connected');
+    } else {
+      setStatus('idle', 'Tap to connect');
+    }
+  }, 3000);
 }
 
-function addTranscript(role, text) {
-  const div = document.createElement('div');
-  div.className = 'transcript-text ' + role;
-  div.textContent = text;
-  transcript.innerHTML = '';
-  transcript.appendChild(div);
+function addMessage(role, text) {
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble ' + role;
+  bubble.textContent = text;
+  chatHistory.appendChild(bubble);
+  
+  // Smooth scroll
+  chatHistory.scrollTo({
+    top: chatHistory.scrollHeight,
+    behavior: 'smooth'
+  });
 }
 
 function toggleMute() {
   state.isMuted = !state.isMuted;
   document.getElementById('muteBtn').classList.toggle('active', state.isMuted);
-  log('Mute: ' + state.isMuted);
+  log('Mute toggled: ' + state.isMuted);
+  
+  if (state.isMuted && state.isRecording) {
+    // If we were recording, cancel/stop it
+    state.isRecording = false;
+    AudioBridge.stopRecording();
+    setStatus('idle', 'Connected');
+  }
 }
 
 function toggleSpeaker() {
@@ -454,7 +774,7 @@ function toggleSpeaker() {
     state.bluetoothOn = false;
     document.getElementById('btBtn').classList.remove('active');
   }
-  log('Speaker: ' + state.speakerOn);
+  log('Speaker speakerphone: ' + state.speakerOn);
 }
 
 function toggleBluetooth() {
@@ -465,7 +785,7 @@ function toggleBluetooth() {
     state.speakerOn = false;
     document.getElementById('speakerBtn').classList.remove('active');
   }
-  log('Bluetooth: ' + state.bluetoothOn);
+  log('Bluetooth SCO: ' + state.bluetoothOn);
 }
 
 function endCall() {
@@ -474,14 +794,29 @@ function endCall() {
     AudioBridge.stopRecording();
   }
   AudioBridge.stopAudio();
-  setStatus('idle', 'Call ended');
-  transcript.innerHTML = '';
-  state.conversationHistory = [];
-  log('Call ended');
+  try {
+    AudioBridge.stopForegroundService();
+    log('Foreground service stopped');
+  } catch(e) {
+    log('Error stopping service: ' + e.message);
+  }
+  
+  state.callSessionActive = false;
+  bottomBar.classList.remove('active');
+  setStatus('idle', 'Tap to connect');
+  chatHistory.innerHTML = '';
+  log('Call session ended');
 }
 
 function openSettings() {
-  document.getElementById('bridgeUrlInput').value = AudioBridge.getBridgeUrl();
+  try {
+    document.getElementById('bridgeUrlInput').value = AudioBridge.getBridgeUrl();
+    document.getElementById('vadToggle').checked = AudioBridge.isVadEnabled();
+    document.getElementById('silenceDurationInput').value = AudioBridge.getSilenceDuration();
+    document.getElementById('speechThresholdInput').value = AudioBridge.getSpeechThreshold();
+  } catch(e) {
+    log('Failed loading settings to UI: ' + e.message);
+  }
   document.getElementById('settingsOverlay').classList.add('visible');
 }
 
@@ -491,11 +826,30 @@ function closeSettings() {
 
 function saveSettings() {
   const url = document.getElementById('bridgeUrlInput').value.trim();
-  if (url) {
-    AudioBridge.setBridgeUrl(url);
-    state.bridgeUrl = url;
-    log('Bridge URL saved: ' + url);
+  const vad = document.getElementById('vadToggle').checked;
+  const silence = parseInt(document.getElementById('silenceDurationInput').value) || 1500;
+  const threshold = parseFloat(document.getElementById('speechThresholdInput').value) || 1000;
+  
+  try {
+    if (url) {
+      AudioBridge.setBridgeUrl(url);
+      state.bridgeUrl = url;
+    }
+    
+    AudioBridge.setVadEnabled(vad);
+    state.vadEnabled = vad;
+    
+    AudioBridge.setSilenceDuration(silence);
+    state.silenceDuration = silence;
+    
+    AudioBridge.setSpeechThreshold(threshold);
+    state.speechThreshold = threshold;
+    
+    log('Settings updated successfully');
+  } catch(e) {
+    log('Error saving settings to native: ' + e.message);
   }
+  
   closeSettings();
 }
 
@@ -516,10 +870,13 @@ function log(msg) {
   console.log('[HermesVoice]', msg);
 }
 
-// Auto-activate earpiece mode on load
-try {
-  AudioBridge.setSpeakerEnabled(false);
-} catch(e) {}
+// Initialize on page load
+window.onload = function() {
+  initSettings();
+  try {
+    AudioBridge.setSpeakerEnabled(false);
+  } catch(e) {}
+};
 </script>
 </body>
 </html>

@@ -51,12 +51,59 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             audioRecord?.startRecording()
             isRecording = true
 
+            val vadEnabled = isVadEnabled()
+            val silenceDurationMs = getSilenceDuration()
+            val speechThreshold = getSpeechThreshold().toDouble()
+            var hasSpoken = false
+            var lastActiveTime = System.currentTimeMillis()
+
             recordingThread = Thread {
                 val buffer = ByteArray(bufferSize)
+                var lastAmplitudeUpdate = 0L
                 while (isRecording) {
                     val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (read > 0) {
                         audioData.write(buffer, 0, read)
+                        
+                        // Calculate RMS amplitude for 16-bit Mono PCM
+                        var sum = 0.0
+                        for (i in 0 until read step 2) {
+                            if (i + 1 < read) {
+                                val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
+                                sum += sample * sample
+                            }
+                        }
+                        val rms = Math.sqrt(sum / (read / 2))
+                        
+                        // Call JS function to update visualizer (throttled to avoid JS bridge overload)
+                        val now = System.currentTimeMillis()
+                        if (now - lastAmplitudeUpdate > 50) {
+                            lastAmplitudeUpdate = now
+                            activity.runOnUiThread {
+                                webView.evaluateJavascript("if (window.onMicVolume) window.onMicVolume($rms);", null)
+                            }
+                        }
+                        
+                        // Silence Detection VAD
+                        if (vadEnabled) {
+                            if (rms > speechThreshold) {
+                                if (!hasSpoken) {
+                                    hasSpoken = true
+                                    activity.runOnUiThread {
+                                        webView.evaluateJavascript("if (window.onSpeechStarted) window.onSpeechStarted();", null)
+                                    }
+                                }
+                                lastActiveTime = now
+                            } else if (hasSpoken) {
+                                if (now - lastActiveTime > silenceDurationMs) {
+                                    // Trigger silence detection (VAD completion)
+                                    activity.runOnUiThread {
+                                        webView.evaluateJavascript("if (window.onSilenceDetected) window.onSilenceDetected();", null)
+                                    }
+                                    hasSpoken = false // reset to prevent multiple callbacks
+                                }
+                            }
+                        }
                     }
                 }
             }.apply { start() }
@@ -259,5 +306,69 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     @JavascriptInterface
     fun hasPermission(permission: String): Boolean {
         return activity.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    @JavascriptInterface
+    fun isVadEnabled(): Boolean {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getBoolean("vad_enabled", false)
+    }
+
+    @JavascriptInterface
+    fun setVadEnabled(enabled: Boolean) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("vad_enabled", enabled).apply()
+    }
+
+    @JavascriptInterface
+    fun getSilenceDuration(): Long {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getLong("silence_duration", 1500L)
+    }
+
+    @JavascriptInterface
+    fun setSilenceDuration(durationMs: Long) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putLong("silence_duration", durationMs).apply()
+    }
+
+    @JavascriptInterface
+    fun getSpeechThreshold(): Float {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getFloat("speech_threshold", 1000f)
+    }
+
+    @JavascriptInterface
+    fun setSpeechThreshold(threshold: Float) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putFloat("speech_threshold", threshold).apply()
+    }
+
+    @JavascriptInterface
+    fun startForegroundService() {
+        activity.runOnUiThread {
+            try {
+                val intent = android.content.Intent(activity, VoiceService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    activity.startForegroundService(intent)
+                } else {
+                    activity.startService(intent)
+                }
+            } catch (e: Exception) {
+                // Ignore or log error
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun stopForegroundService() {
+        activity.runOnUiThread {
+            try {
+                val intent = android.content.Intent(activity, VoiceService::class.java)
+                activity.stopService(intent)
+            } catch (e: Exception) {
+                // Ignore or log error
+            }
+        }
     }
 }
