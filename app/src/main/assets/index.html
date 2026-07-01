@@ -605,76 +605,18 @@ function stopAndSend() {
   state.isRecording = false;
 
   try {
-    const audioBase64 = AudioBridge.stopRecording();
-    if (!audioBase64) {
-      if (state.callSessionActive) {
-        setStatus('idle', 'Connected');
-      } else {
-        setStatus('idle', 'Tap to connect');
-      }
-      return;
-    }
-    
     if (state.isMuted) {
       log('Audio captured but muted, skipping send.');
+      AudioBridge.stopRecording();
       setStatus('idle', 'Connected');
       return;
     }
     
-    log('Audio captured, sending to bridge...');
-    sendToBridge(audioBase64);
+    log('Stopping recording and sending via native channel...');
+    AudioBridge.stopAndSendNative();
   } catch(e) {
     setStatus('error', 'Error stopping: ' + e.message);
     log('Stop error: ' + e.message);
-  }
-}
-
-async function sendToBridge(audioBase64) {
-  const url = AudioBridge.getBridgeUrl();
-  log('Bridge URL: ' + url);
-
-  try {
-    const audioBytes = base64ToUint8Array(audioBase64);
-    const response = await fetch(url + '/voice', {
-      method: 'POST',
-      headers: { 'Content-Type': 'audio/wav' },
-      body: audioBytes
-    });
-
-    if (!response.ok) {
-      throw new Error('Server returned ' + response.status);
-    }
-
-    const userTranscript = response.headers.get('X-Transcript') || '';
-    const assistantResponse = response.headers.get('X-Response') || '';
-
-    if (userTranscript) {
-      addMessage('user', userTranscript);
-    }
-    if (assistantResponse) {
-      addMessage('assistant', assistantResponse);
-    }
-
-    const audioBlob = await response.blob();
-    const reader = new FileReader();
-    reader.onload = function() {
-      const base64 = reader.result.split(',')[1];
-      setStatus('speaking', 'Speaking...');
-      log('Playing audio response');
-      AudioBridge.playAudio(base64);
-    };
-    reader.readAsDataURL(audioBlob);
-
-  } catch(e) {
-    log('Bridge error: ' + e.message);
-    setStatus('error', 'Connection error');
-    setTimeout(() => {
-      if (state.callSessionActive) {
-        setStatus('idle', 'Connected');
-      } else {
-        setStatus('idle', 'Tap to connect');
-      }
-    }, 3000);
   }
 }
 
@@ -705,11 +647,33 @@ window.onSpeechStarted = function() {
   }
 };
 
-window.onSilenceDetected = function() {
-  log('VAD: Silence detected, auto-sending...');
-  if (state.isRecording) {
-    stopAndSend();
+window.onVadSilenceTriggered = function() {
+  log('VAD: Silence detected natively, uploading audio...');
+  setStatus('processing', 'Processing...');
+  state.isRecording = false;
+};
+
+window.onBridgeSuccess = function(userTranscript, assistantResponse) {
+  log('Bridge transaction succeeded');
+  if (userTranscript) {
+    addMessage('user', userTranscript);
   }
+  if (assistantResponse) {
+    addMessage('assistant', assistantResponse);
+  }
+  setStatus('speaking', 'Speaking...');
+};
+
+window.onBridgeError = function(errorMsg) {
+  log('Bridge error: ' + errorMsg);
+  setStatus('error', 'Connection error');
+  setTimeout(() => {
+    if (state.callSessionActive) {
+      setStatus('idle', 'Connected');
+    } else {
+      setStatus('idle', 'Tap to connect');
+    }
+  }, 3000);
 };
 
 function onAudioPlayStarted() {
@@ -853,14 +817,7 @@ function saveSettings() {
   closeSettings();
 }
 
-function base64ToUint8Array(base64) {
-  const raw = atob(base64);
-  const array = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    array[i] = raw.charCodeAt(i);
-  }
-  return array;
-}
+// Byte decoding handled natively
 
 function log(msg) {
   const el = document.getElementById('debugLog');

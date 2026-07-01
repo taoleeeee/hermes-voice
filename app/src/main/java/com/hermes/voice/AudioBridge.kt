@@ -98,8 +98,9 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                                 if (now - lastActiveTime > silenceDurationMs) {
                                     // Trigger silence detection (VAD completion)
                                     activity.runOnUiThread {
-                                        webView.evaluateJavascript("if (window.onSilenceDetected) window.onSilenceDetected();", null)
+                                        webView.evaluateJavascript("if (window.onVadSilenceTriggered) window.onVadSilenceTriggered();", null)
                                     }
+                                    stopAndSendNativeInternal()
                                     hasSpoken = false // reset to prevent multiple callbacks
                                 }
                             }
@@ -134,6 +135,135 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             return Base64.encodeToString(oggData, Base64.NO_WRAP)
         } catch (e: Exception) {
             return ""
+        }
+    }
+
+    @JavascriptInterface
+    fun stopAndSendNative() {
+        stopAndSendNativeInternal()
+    }
+
+    private fun stopAndSendNativeInternal() {
+        if (!isRecording) return
+        isRecording = false
+
+        Thread {
+            try {
+                recordingThread?.join(2000)
+                audioRecord?.stop()
+                audioRecord?.release()
+                audioRecord = null
+
+                val pcmData = audioData.toByteArray()
+                audioData.reset()
+
+                val wavData = pcmToOgg(pcmData)
+                sendAudioToBridge(wavData)
+            } catch (e: Exception) {
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('Stop failed: ${e.message}');", null)
+                }
+            }
+        }.start()
+    }
+
+    private fun sendAudioToBridge(wavData: ByteArray) {
+        Thread {
+            try {
+                val bridgeUrl = getBridgeUrl()
+                val url = java.net.URL("$bridgeUrl/voice")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 20000
+                conn.doOutput = true
+                conn.doInput = true
+                conn.setRequestProperty("Content-Type", "audio/wav")
+
+                conn.outputStream.use { os ->
+                    os.write(wavData)
+                    os.flush()
+                }
+
+                val responseCode = conn.responseCode
+                if (responseCode == java.net.HttpURLConnection.HTTP_OK) {
+                    val userTranscript = conn.getHeaderField("X-Transcript") ?: ""
+                    val assistantResponse = conn.getHeaderField("X-Response") ?: ""
+                    val audioBytes = conn.inputStream.use { it.readBytes() }
+
+                    activity.runOnUiThread {
+                        val escUser = JSONObject.quote(userTranscript)
+                        val escAssistant = JSONObject.quote(assistantResponse)
+                        webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess($escUser, $escAssistant);", null)
+                        
+                        playAudioBytes(audioBytes)
+                    }
+                } else {
+                    val errorMsg = "Server returned code $responseCode"
+                    activity.runOnUiThread {
+                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
+                    }
+                }
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: "Unknown error"
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
+                }
+            }
+        }.start()
+    }
+
+    private fun playAudioBytes(audioBytes: ByteArray) {
+        try {
+            activity.runOnUiThread {
+                try {
+                    mediaPlayer?.release()
+                    mediaPlayer = MediaPlayer()
+
+                    val tempFile = java.io.File.createTempFile("audio_resp_", ".mp3", activity.cacheDir)
+                    tempFile.writeBytes(audioBytes)
+                    tempFile.deleteOnExit()
+
+                    mediaPlayer?.apply {
+                        setDataSource(tempFile.absolutePath)
+
+                        if (speakerEnabled) {
+                            setAudioAttributes(
+                                AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build()
+                            )
+                        } else {
+                            setAudioAttributes(
+                                AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                    .build()
+                            )
+                        }
+
+                        setOnPreparedListener {
+                            start()
+                            webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
+                        }
+                        setOnCompletionListener {
+                            webView.evaluateJavascript("if (window.onAudioPlayCompleted) window.onAudioPlayCompleted();", null)
+                            tempFile.delete()
+                        }
+                        setOnErrorListener { _, what, extra ->
+                            webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('$what:$extra');", null)
+                            tempFile.delete()
+                            true
+                        }
+                        prepareAsync()
+                    }
+                } catch (e: Exception) {
+                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('${e.message}');", null)
+                }
+            }
+        } catch (e: Exception) {
+            webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('${e.message}');", null)
         }
     }
 
