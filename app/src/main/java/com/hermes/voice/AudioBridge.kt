@@ -12,13 +12,11 @@ import java.io.ByteArrayOutputStream
 
 class AudioBridge(private val activity: MainActivity, private val webView: WebView) {
 
-    private var audioRecord: AudioRecord? = null
+    private var mediaRecorder: MediaRecorder? = null
     private var isRecording = false
     private var recordingThread: Thread? = null
-    private var audioData = ByteArrayOutputStream()
-    private val sampleRate = 16000
-    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+    private var tempAudioFile: java.io.File? = null
+    private var currentMimeType = "audio/wav"
 
     private val audioManager: android.media.AudioManager by lazy {
         activity.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -32,23 +30,34 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     fun startRecording(): String {
         if (isRecording) return "already_recording"
 
-        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        if (bufferSize == AudioRecord.ERROR_BAD_VALUE || bufferSize == AudioRecord.ERROR) {
-            return "error_bad_value"
-        }
-
         try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate, channelConfig, audioFormat, bufferSize
-            )
+            val useOgg = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            val fileSuffix = if (useOgg) ".ogg" else ".m4a"
+            currentMimeType = if (useOgg) "audio/ogg" else "audio/mp4"
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                return "error_init"
+            tempAudioFile = java.io.File.createTempFile("hermes_rec_", fileSuffix, activity.cacheDir)
+
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(activity)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                if (useOgg) {
+                    setOutputFormat(11) // MediaRecorder.OutputFormat.OGG is 11
+                    setAudioEncoder(7)  // MediaRecorder.AudioEncoder.OPUS is 7
+                } else {
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                }
+                setAudioEncodingBitRate(24000)
+                setAudioSamplingRate(16000)
+                setOutputFile(tempAudioFile?.absolutePath)
+                prepare()
+                start()
             }
 
-            audioData.reset()
-            audioRecord?.startRecording()
             isRecording = true
 
             val vadEnabled = isVadEnabled()
@@ -58,53 +67,43 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             var lastActiveTime = System.currentTimeMillis()
 
             recordingThread = Thread {
-                val buffer = ByteArray(bufferSize)
                 var lastAmplitudeUpdate = 0L
                 while (isRecording) {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (read > 0) {
-                        audioData.write(buffer, 0, read)
-                        
-                        // Calculate RMS amplitude for 16-bit Mono PCM
-                        var sum = 0.0
-                        for (i in 0 until read step 2) {
-                            if (i + 1 < read) {
-                                val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort()
-                                sum += sample * sample
-                            }
+                    val maxAmp = mediaRecorder?.maxAmplitude ?: 0
+                    val rms = maxAmp.toDouble()
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastAmplitudeUpdate > 50) {
+                        lastAmplitudeUpdate = now
+                        activity.runOnUiThread {
+                            webView.evaluateJavascript("if (window.onMicVolume) window.onMicVolume($rms);", null)
                         }
-                        val rms = Math.sqrt(sum / (read / 2))
-                        
-                        // Call JS function to update visualizer (throttled to avoid JS bridge overload)
-                        val now = System.currentTimeMillis()
-                        if (now - lastAmplitudeUpdate > 50) {
-                            lastAmplitudeUpdate = now
-                            activity.runOnUiThread {
-                                webView.evaluateJavascript("if (window.onMicVolume) window.onMicVolume($rms);", null)
-                            }
-                        }
-                        
-                        // Silence Detection VAD
-                        if (vadEnabled) {
-                            if (rms > speechThreshold) {
-                                if (!hasSpoken) {
-                                    hasSpoken = true
-                                    activity.runOnUiThread {
-                                        webView.evaluateJavascript("if (window.onSpeechStarted) window.onSpeechStarted();", null)
-                                    }
-                                }
-                                lastActiveTime = now
-                            } else if (hasSpoken) {
-                                if (now - lastActiveTime > silenceDurationMs) {
-                                    // Trigger silence detection (VAD completion)
-                                    activity.runOnUiThread {
-                                        webView.evaluateJavascript("if (window.onVadSilenceTriggered) window.onVadSilenceTriggered();", null)
-                                    }
-                                    stopAndSendNativeInternal()
-                                    hasSpoken = false // reset to prevent multiple callbacks
+                    }
+
+                    if (vadEnabled) {
+                        if (rms > speechThreshold) {
+                            if (!hasSpoken) {
+                                hasSpoken = true
+                                activity.runOnUiThread {
+                                    webView.evaluateJavascript("if (window.onSpeechStarted) window.onSpeechStarted();", null)
                                 }
                             }
+                            lastActiveTime = now
+                        } else if (hasSpoken) {
+                            if (now - lastActiveTime > silenceDurationMs) {
+                                activity.runOnUiThread {
+                                    webView.evaluateJavascript("if (window.onVadSilenceTriggered) window.onVadSilenceTriggered();", null)
+                                }
+                                stopAndSendNativeInternal()
+                                hasSpoken = false
+                            }
                         }
+                    }
+
+                    try {
+                        Thread.sleep(50)
+                    } catch (e: InterruptedException) {
+                        break
                     }
                 }
             }.apply { start() }
@@ -123,16 +122,20 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         isRecording = false
 
         try {
+            recordingThread?.interrupt()
             recordingThread?.join(2000)
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
+            mediaRecorder?.stop()
+            mediaRecorder?.release()
+            mediaRecorder = null
 
-            val pcmData = audioData.toByteArray()
-            audioData.reset()
-
-            val oggData = pcmToOgg(pcmData)
-            return Base64.encodeToString(oggData, Base64.NO_WRAP)
+            val file = tempAudioFile
+            if (file != null && file.exists()) {
+                val data = file.readBytes()
+                file.delete()
+                tempAudioFile = null
+                return Base64.encodeToString(data, Base64.NO_WRAP)
+            }
+            return ""
         } catch (e: Exception) {
             return ""
         }
@@ -149,16 +152,23 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
 
         Thread {
             try {
+                recordingThread?.interrupt()
                 recordingThread?.join(2000)
-                audioRecord?.stop()
-                audioRecord?.release()
-                audioRecord = null
+                mediaRecorder?.stop()
+                mediaRecorder?.release()
+                mediaRecorder = null
 
-                val pcmData = audioData.toByteArray()
-                audioData.reset()
-
-                val wavData = pcmToOgg(pcmData)
-                sendAudioToBridge(wavData)
+                val file = tempAudioFile
+                if (file != null && file.exists()) {
+                    val compressedData = file.readBytes()
+                    file.delete()
+                    tempAudioFile = null
+                    sendAudioToBridge(compressedData, currentMimeType)
+                } else {
+                    activity.runOnUiThread {
+                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('No audio recorded file found');", null)
+                    }
+                }
             } catch (e: Exception) {
                 activity.runOnUiThread {
                     webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('Stop failed: ${e.message}');", null)
@@ -167,21 +177,21 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         }.start()
     }
 
-    private fun sendAudioToBridge(wavData: ByteArray) {
+    private fun sendAudioToBridge(audioData: ByteArray, mimeType: String) {
         Thread {
             try {
                 val bridgeUrl = getBridgeUrl()
                 val url = java.net.URL("$bridgeUrl/voice")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "POST"
-                conn.connectTimeout = 10000
-                conn.readTimeout = 60000
+                conn.connectTimeout = 8000
+                conn.readTimeout = 20000
                 conn.doOutput = true
                 conn.doInput = true
-                conn.setRequestProperty("Content-Type", "audio/wav")
+                conn.setRequestProperty("Content-Type", mimeType)
 
                 conn.outputStream.use { os ->
-                    os.write(wavData)
+                    os.write(audioData)
                     os.flush()
                 }
 
@@ -267,43 +277,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         }
     }
 
-    private fun pcmToOgg(pcmData: ByteArray): ByteArray {
-        // For simplicity, wrap PCM in a WAV-like container
-        // The bridge server accepts audio/ogg but also handles raw audio
-        val sampleCount = pcmData.size / 2
-        val wav = ByteArrayOutputStream()
-        wav.write("RIFF".toByteArray())
-        wav.write(intToBytes(36 + pcmData.size))
-        wav.write("WAVE".toByteArray())
-        wav.write("fmt ".toByteArray())
-        wav.write(intToBytes(16))
-        wav.write(shortToBytes(1)) // PCM
-        wav.write(shortToBytes(1)) // mono
-        wav.write(intToBytes(sampleRate))
-        wav.write(intToBytes(sampleRate * 2))
-        wav.write(shortToBytes(2))
-        wav.write(shortToBytes(16))
-        wav.write("data".toByteArray())
-        wav.write(intToBytes(pcmData.size))
-        wav.write(pcmData)
-        return wav.toByteArray()
-    }
-
-    private fun intToBytes(value: Int): ByteArray {
-        return byteArrayOf(
-            (value and 0xFF).toByte(),
-            (value shr 8 and 0xFF).toByte(),
-            (value shr 16 and 0xFF).toByte(),
-            (value shr 24 and 0xFF).toByte()
-        )
-    }
-
-    private fun shortToBytes(value: Int): ByteArray {
-        return byteArrayOf(
-            (value and 0xFF).toByte(),
-            (value shr 8 and 0xFF).toByte()
-        )
-    }
+    // WAV wrapping helpers removed, compression handles native containers
 
     @JavascriptInterface
     fun playAudio(base64Audio: String) {
