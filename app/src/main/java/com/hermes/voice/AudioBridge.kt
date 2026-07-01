@@ -184,8 +184,8 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 val url = java.net.URL("$bridgeUrl/voice")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "POST"
-                conn.connectTimeout = 8000
-                conn.readTimeout = 20000
+                conn.connectTimeout = 10000
+                conn.readTimeout = 120000
                 conn.doOutput = true
                 conn.doInput = true
                 conn.setRequestProperty("Content-Type", mimeType)
