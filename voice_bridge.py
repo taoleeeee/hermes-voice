@@ -3,9 +3,9 @@
 Hermes Voice Bridge Server (runs on P6P)
 =========================================
 Accepts audio from P9P voice client, processes through:
-  1. STT via Groq Whisper API (fast, ~1-2s)
+  1. STT via Deepgram API (fast, ~0.3-1s) with local whisper.cpp fallback
   2. Chat via Hermes API server (full agent with tools/memory)
-  3. TTS via edge-tts (free, decent quality)
+  3. TTS via edge-tts native Python lib (fast) with CLI fallback
 
 Endpoints:
   POST /voice       - Send audio, get back audio response
@@ -30,8 +30,7 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 P6P_HERMES_API = os.getenv("HERMES_API_URL", "http://127.0.0.1:8642")
 P6P_API_KEY = os.getenv("API_SERVER_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 WHISPER_BIN = os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli")
 WHISPER_MODEL = os.path.expanduser("~/whisper.cpp/models/ggml-base.bin")
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "en-AU-NatashaNeural")
@@ -42,7 +41,38 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("voice-bridge")
 
 # ---------------------------------------------------------------------------
-# STT via local whisper.cpp
+# STT via Deepgram API (primary - fast cloud transcription)
+# ---------------------------------------------------------------------------
+def transcribe_deepgram(audio_path: str) -> str:
+    """Transcribe audio using Deepgram Nova-3 API."""
+    import urllib.request
+
+    if not DEEPGRAM_API_KEY:
+        raise RuntimeError("DEEPGRAM_API_KEY not set")
+
+    with open(audio_path, "rb") as f:
+        audio_data = f.read()
+
+    url = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"
+    req = urllib.request.Request(url, data=audio_data, method="POST")
+    req.add_header("Authorization", f"Token {DEEPGRAM_API_KEY}")
+    req.add_header("Content-Type", "audio/wav")
+
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        result = json.loads(resp.read().decode())
+
+    transcript = result.get("results", {})
+    channels = transcript.get("channels", [])
+    if channels:
+        alternatives = channels[0].get("alternatives", [])
+        if alternatives:
+            return alternatives[0].get("transcript", "").strip()
+
+    return "[STT ERROR: no transcript in response]"
+
+
+# ---------------------------------------------------------------------------
+# STT via local whisper.cpp (fallback)
 # ---------------------------------------------------------------------------
 def transcribe_local(audio_path: str) -> str:
     """Transcribe audio using local whisper.cpp."""
@@ -74,7 +104,7 @@ def transcribe_local(audio_path: str) -> str:
                 return f.read().strip()
         else:
             log.error(f"whisper-cli no output: {result.stderr[:200]}")
-            return f"[STT ERROR: no output]"
+            return "[STT ERROR: no output]"
     except subprocess.TimeoutExpired:
         log.error("whisper-cli timed out")
         return "[STT ERROR: timeout]"
@@ -82,7 +112,6 @@ def transcribe_local(audio_path: str) -> str:
         log.error(f"whisper-cli failed: {e}")
         return f"[STT ERROR: {e}]"
     finally:
-        # Cleanup
         try:
             import shutil
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -148,10 +177,39 @@ def chat_hermes_cli(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# TTS via edge-tts
+# TTS via edge-tts (native Python import preferred, CLI fallback)
 # ---------------------------------------------------------------------------
 def generate_tts(text: str, output_path: str) -> bool:
-    """Generate speech audio using edge-tts (sync wrapper)."""
+    """Generate speech audio using edge-tts. Native lib preferred, CLI fallback."""
+    # Try native Python import first (faster - no subprocess overhead)
+    try:
+        import edge_tts
+        _generate_tts_native(text, output_path)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return True
+        log.warning("edge-tts native produced empty file, falling back to CLI")
+    except ImportError:
+        log.debug("edge-tts Python lib not available, using CLI")
+    except Exception as e:
+        log.warning(f"edge-tts native failed ({e}), falling back to CLI")
+
+    # Fallback: CLI subprocess
+    return _generate_tts_cli(text, output_path)
+
+
+def _generate_tts_native(text: str, output_path: str) -> None:
+    """Generate TTS using edge-tts Python library directly."""
+    import edge_tts
+
+    async def _run():
+        communicate = edge_tts.Communicate(text, EDGE_TTS_VOICE)
+        await communicate.save(output_path)
+
+    asyncio.run(_run())
+
+
+def _generate_tts_cli(text: str, output_path: str) -> bool:
+    """Generate TTS using edge-tts CLI (fallback)."""
     import subprocess
     try:
         result = subprocess.run(
@@ -160,7 +218,7 @@ def generate_tts(text: str, output_path: str) -> bool:
         )
         return result.returncode == 0 and os.path.exists(output_path)
     except Exception as e:
-        log.error(f"edge-tts failed: {e}")
+        log.error(f"edge-tts CLI failed: {e}")
         return False
 
 
@@ -178,17 +236,31 @@ def process_voice(audio_data: bytes) -> dict:
         audio_in_path = f.name
 
     try:
-        # Step 1: STT
+        # Step 1: STT (Deepgram primary, local whisper fallback)
         t0 = time.time()
-        user_text = transcribe_local(audio_in_path)
+        user_text = None
+
+        if DEEPGRAM_API_KEY:
+            try:
+                user_text = transcribe_deepgram(audio_in_path)
+                timings["stt_method"] = "deepgram"
+            except Exception as e:
+                log.warning(f"Deepgram STT failed ({e}), falling back to local whisper")
+
+        if not user_text or user_text.startswith("[STT ERROR"):
+            if user_text and user_text.startswith("[STT ERROR"):
+                log.warning(f"Deepgram returned error, falling back to local whisper")
+            user_text = transcribe_local(audio_in_path)
+            timings["stt_method"] = "local_whisper"
+
         timings["stt"] = round(time.time() - t0, 2)
         result["text_in"] = user_text
 
-        if user_text.startswith("[ERROR"):
+        if user_text.startswith("[STT ERROR") or user_text.startswith("[ERROR"):
             result["text_out"] = "Sorry, I couldn't understand the audio."
             return result
 
-        log.info(f"STT ({timings['stt']}s): {user_text[:80]}")
+        log.info(f"STT ({timings['stt']}s, {timings.get('stt_method', '?')}): {user_text[:80]}")
 
         # Step 2: Chat
         t0 = time.time()
@@ -214,7 +286,7 @@ def process_voice(audio_data: bytes) -> dict:
         else:
             log.warning("TTS failed, returning text only")
 
-        timings["total"] = round(sum(timings.values()), 2)
+        timings["total"] = round(sum(v for k, v in timings.items() if isinstance(v, (int, float))), 2)
         return result
 
     finally:
@@ -279,7 +351,8 @@ class VoiceHandler(BaseHTTPRequestHandler):
         data = {
             "status": "ok",
             "hermes_api": hermes_ok,
-            "groq_key": bool(GROQ_API_KEY),
+            "deepgram_key": bool(DEEPGRAM_API_KEY),
+            "whisper_bin": os.path.exists(WHISPER_BIN),
             "tts_voice": EDGE_TTS_VOICE,
         }
         self.send_response(200)
@@ -395,7 +468,9 @@ class VoiceHandler(BaseHTTPRequestHandler):
 def main():
     log.info(f"Voice Bridge starting on {LISTEN_HOST}:{LISTEN_PORT}")
     log.info(f"  Hermes API: {P6P_HERMES_API} (key: {'set' if P6P_API_KEY else 'NOT SET'})")
-    log.info(f"  Groq STT: {'set' if GROQ_API_KEY else 'NOT SET'}")
+    log.info(f"  Deepgram STT: {'set' if DEEPGRAM_API_KEY else 'NOT SET (will use local whisper)'}")
+    whisper_status = "found" if os.path.exists(WHISPER_BIN) else "NOT FOUND"
+    log.info(f"  Local whisper: {whisper_status}")
     log.info(f"  TTS voice: {EDGE_TTS_VOICE}")
 
     server = HTTPServer((LISTEN_HOST, LISTEN_PORT), VoiceHandler)
