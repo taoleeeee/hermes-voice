@@ -716,8 +716,8 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     private fun downloadFile(urlStr: String, destFile: java.io.File, onProgress: (Int) -> Unit) {
         val url = java.net.URL(urlStr)
         val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 30000
+        conn.connectTimeout = 30000
+        conn.readTimeout = 300000  // 5 min for large files
         val responseCode = conn.responseCode
         if (responseCode != java.net.HttpURLConnection.HTTP_OK) {
             throw java.io.IOException("Server returned HTTP $responseCode for $urlStr")
@@ -771,9 +771,10 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 copyAssetFolder(activity.assets, "espeak-ng-data", java.io.File(kokoroDir, "espeak-ng-data").absolutePath)
                 copyAssetFile(activity.assets, "tokens.txt", java.io.File(kokoroDir, "tokens.txt").absolutePath)
 
+                val bridgeUrl = prefs.getString("bridge_url", "http://192.168.1.100:8700") ?: "http://192.168.1.100:8700"
                 val modelFile = java.io.File(kokoroDir, "model.onnx")
                 if (!modelFile.exists() || modelFile.length() < 10 * 1024 * 1024) {
-                    downloadFile("https://huggingface.co/csukuangfj/sherpa-onnx-tts-kokoro-en-v0.19/resolve/main/model.onnx", modelFile) { progress ->
+                    downloadFile("$bridgeUrl/kokoro/model.onnx", modelFile) { progress ->
                         activity.runOnUiThread {
                             webView.evaluateJavascript("if (window.onKokoroDownloadProgress) window.onKokoroDownloadProgress('Downloading model.onnx', $progress);", null)
                         }
@@ -782,7 +783,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
 
                 val voicesFile = java.io.File(kokoroDir, "voices.bin")
                 if (!voicesFile.exists() || voicesFile.length() < 5 * 1024 * 1024) {
-                    downloadFile("https://huggingface.co/csukuangfj/sherpa-onnx-tts-kokoro-en-v0.19/resolve/main/voices.bin", voicesFile) { progress ->
+                    downloadFile("$bridgeUrl/kokoro/voices.bin", voicesFile) { progress ->
                         activity.runOnUiThread {
                             webView.evaluateJavascript("if (window.onKokoroDownloadProgress) window.onKokoroDownloadProgress('Downloading voices.bin', $progress);", null)
                         }
