@@ -771,6 +771,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 copyAssetFolder(activity.assets, "espeak-ng-data", java.io.File(kokoroDir, "espeak-ng-data").absolutePath)
                 copyAssetFile(activity.assets, "tokens.txt", java.io.File(kokoroDir, "tokens.txt").absolutePath)
 
+                val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
                 val bridgeUrl = prefs.getString("bridge_url", "http://192.168.1.100:8700") ?: "http://192.168.1.100:8700"
                 val modelFile = java.io.File(kokoroDir, "model.onnx")
                 if (!modelFile.exists() || modelFile.length() < 10 * 1024 * 1024) {
