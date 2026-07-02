@@ -25,7 +25,7 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+      run: set -o pipefail && ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
     - name: Upload build log
       if: failure()
       uses: actions/upload-artifact@v4
