@@ -40,6 +40,14 @@ LISTEN_PORT = int(os.getenv("VOICE_BRIDGE_PORT", "8700"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("voice-bridge")
 
+# Load voice-optimized system prompt (injected into every chat call)
+VOICE_SYSTEM_PROMPT = ""
+_voice_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_system_prompt.txt")
+if os.path.exists(_voice_prompt_path):
+    with open(_voice_prompt_path, "r") as f:
+        VOICE_SYSTEM_PROMPT = f.read().strip()
+    log.info(f"Voice system prompt loaded ({len(VOICE_SYSTEM_PROMPT)} chars)")
+
 # ---------------------------------------------------------------------------
 # STT via Deepgram API (primary - fast cloud transcription)
 # ---------------------------------------------------------------------------
@@ -137,6 +145,8 @@ def chat_hermes(message: str, session_id: str = None) -> str:
         "messages": [{"role": "user", "content": message}],
         "stream": False,
     }
+    if VOICE_SYSTEM_PROMPT:
+        payload["messages"].append({"role": "system", "content": VOICE_SYSTEM_PROMPT})
     if session_id:
         headers["X-Hermes-Session-Id"] = session_id
 
@@ -456,7 +466,7 @@ class VoiceHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             path = urlparse(self.path).path
-            if path == "/voice":
+            if path in ("/voice", "/voice/stream"):
                 self._handle_voice()
             elif path == "/chat":
                 self._handle_chat()
@@ -548,7 +558,7 @@ class VoiceHandler(BaseHTTPRequestHandler):
                         self.send_header("Cache-Control", "no-cache")
                         self.send_header("Connection", "keep-alive")
                         self.end_headers()
-                        err_payload = json.dumps({'error': "Sorry, I couldn't understand the audio."})
+                        err_payload = json.dumps({'event': 'error', 'text': "Sorry, I couldn't understand the audio."})
                         self.wfile.write(f"data: {err_payload}\n\n".encode())
                         self.wfile.flush()
                         return
@@ -561,25 +571,35 @@ class VoiceHandler(BaseHTTPRequestHandler):
                     self.end_headers()
 
                     # Send the user transcript first
-                    self.wfile.write(f"data: {json.dumps({'text_in': user_text})}\n\n".encode())
+                    self.wfile.write(f"data: {json.dumps({'event': 'transcript', 'text': user_text})}\n\n".encode())
                     self.wfile.flush()
 
                     chat_text = ""
                     t_start_chat = time.time()
+                    sentence_buffer = ""
+                    import re
                     for chunk in chat_hermes_stream(user_text):
                         chat_text += chunk
-                        self.wfile.write(f"data: {json.dumps({'text_out_chunk': chunk})}\n\n".encode())
+                        sentence_buffer += chunk
+                        
+                        parts = re.split(r'([.!?\n]+)', sentence_buffer)
+                        if len(parts) >= 3:
+                            for i in range(0, len(parts) - 2, 2):
+                                sentence = (parts[i] + parts[i+1]).strip()
+                                if sentence:
+                                    self.wfile.write(f"data: {json.dumps({'event': 'sentence', 'text': sentence})}\n\n".encode())
+                                    self.wfile.flush()
+                            sentence_buffer = parts[-1]
+
+                    remaining = sentence_buffer.strip()
+                    if remaining:
+                        self.wfile.write(f"data: {json.dumps({'event': 'sentence', 'text': remaining})}\n\n".encode())
                         self.wfile.flush()
 
                     chat_time = round(time.time() - t_start_chat, 2)
                     log.info(f"Chat streaming completed ({chat_time}s): {chat_text[:80]}")
 
-                    timings = {
-                        "stt": stt_time,
-                        "chat": chat_time,
-                        "total": round(stt_time + chat_time, 2)
-                    }
-                    self.wfile.write(f"data: {json.dumps({'timings': timings, 'done': True})}\n\n".encode())
+                    self.wfile.write(f"data: {json.dumps({'event': 'done', 'text_out': chat_text})}\n\n".encode())
                     self.wfile.flush()
 
                 finally:

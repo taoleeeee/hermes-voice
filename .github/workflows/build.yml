@@ -32,12 +32,21 @@ jobs:
       with:
         name: build-log
         path: build.log
+    - name: Rename APK with version
+      if: success()
+      id: rename
+      run: |
+        VERSION="${GITHUB_REF_NAME}"
+        APK_SRC="app/build/outputs/apk/debug/app-debug.apk"
+        APK_DST="hermes-voice-${VERSION}.apk"
+        cp "$APK_SRC" "$APK_DST"
+        echo "apk_name=$APK_DST" >> "$GITHUB_OUTPUT"
     - name: Upload APK artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: hermes-voice-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: hermes-voice-${{ github.ref_name }}
+        path: ${{ steps.rename.outputs.apk_name }}
         retention-days: 90
     - name: Create Release with APK
       if: success() && startsWith(github.ref, 'refs/tags/v')
@@ -49,4 +58,4 @@ jobs:
           --title "${{ github.ref_name }}" \
           --generate-notes \
           --fail-on-no-commits=false \
-          app/build/outputs/apk/debug/app-debug.apk
+          ${{ steps.rename.outputs.apk_name }}
