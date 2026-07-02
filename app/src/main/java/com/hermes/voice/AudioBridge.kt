@@ -490,10 +490,10 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                                     val sentence = event.optString("text", "").trim()
                                     if (sentence.isNotEmpty()) {
                                         fullResponse.append(sentence).append(" ")
-                                        // Update UI with partial response
+                                        // Update UI with sentence chunk
                                         activity.runOnUiThread {
-                                            val esc = JSONObject.quote(fullResponse.toString().trim())
-                                            webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess(${JSONObject.quote(userTranscript)}, $esc);", null)
+                                            val esc = JSONObject.quote(sentence + " ")
+                                            webView.evaluateJavascript("if (window.onBridgeChunk) window.onBridgeChunk($esc);", null)
                                         }
                                         // Synthesize this sentence immediately
                                         synthesizeAndQueue(tts, sentence)
@@ -810,7 +810,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
 
     @JavascriptInterface
     fun stopAudio() {
-        tts?.stop()
+        stopSpeaking()
         playQueue.clear()
         isPlayingQueue = false
         isStreamFinished = true
