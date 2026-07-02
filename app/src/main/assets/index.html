@@ -563,6 +563,8 @@ const state = {
   callSessionActive: false
 };
 
+let currentAssistantBubble = null;
+
 const mainBtn = document.getElementById('mainButton');
 const statusText = document.getElementById('statusText');
 const pulseRing = document.getElementById('pulseRing');
@@ -634,6 +636,7 @@ function toggleRecording() {
 }
 
 function startListening() {
+  currentAssistantBubble = null;
   try {
     AudioBridge.stopAudio();
     const result = AudioBridge.startRecording();
@@ -718,6 +721,22 @@ window.onBridgeSuccess = function(userTranscript, assistantResponse) {
   setStatus('speaking', 'Speaking...');
 };
 
+window.onBridgeChunk = function(chunk) {
+  if (!currentAssistantBubble) {
+    setStatus('speaking', 'Speaking...');
+    currentAssistantBubble = document.createElement('div');
+    currentAssistantBubble.className = 'chat-bubble assistant';
+    currentAssistantBubble.textContent = chunk;
+    chatHistory.appendChild(currentAssistantBubble);
+  } else {
+    currentAssistantBubble.textContent += chunk;
+  }
+  chatHistory.scrollTo({
+    top: chatHistory.scrollHeight,
+    behavior: 'smooth'
+  });
+};
+
 window.onBridgeError = function(errorMsg) {
   log('Bridge error: ' + errorMsg);
   setStatus('error', 'Connection error');
@@ -740,6 +759,7 @@ function onAudioPlayStarted() {
 
 function onAudioPlayCompleted() {
   log('Audio playback completed');
+  currentAssistantBubble = null;
   if (state.callSessionActive && state.vadEnabled && !state.isMuted) {
     log('VAD: Auto-starting next listening turn...');
     startListening();
@@ -824,6 +844,7 @@ function endCall() {
   }
   
   state.callSessionActive = false;
+  currentAssistantBubble = null;
   bottomBar.classList.remove('active');
   setStatus('idle', 'Tap to connect');
   chatHistory.innerHTML = '';

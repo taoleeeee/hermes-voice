@@ -157,6 +157,58 @@ def chat_hermes(message: str, session_id: str = None) -> str:
         raise
 
 
+def chat_hermes_stream(message: str, session_id: str = None):
+    """Send a message to Hermes and yield tokens as they arrive."""
+    import urllib.request
+
+    url = f"{P6P_HERMES_API}/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {P6P_API_KEY}",
+    }
+    payload = {
+        "model": "hermes-agent",
+        "messages": [{"role": "user", "content": message}],
+        "stream": True,
+    }
+    if session_id:
+        headers["X-Hermes-Session-Id"] = session_id
+
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    for k, v in headers.items():
+        req.add_header(k, v)
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                if not line:
+                    continue
+                line = line.decode('utf-8').strip()
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                    except Exception:
+                        pass
+    except Exception as e:
+        log.warning(f"Hermes streaming failed ({e}), falling back to CLI")
+        try:
+            fallback_text = chat_hermes_cli(message)
+            yield fallback_text
+        except Exception as ex:
+            log.error(f"Fallback CLI failed: {ex}")
+            yield f" [Error: {ex}]"
+
+
 # ---------------------------------------------------------------------------
 # Fallback chat via hermes CLI
 # ---------------------------------------------------------------------------
@@ -463,47 +515,110 @@ class VoiceHandler(BaseHTTPRequestHandler):
             log.info(f"Received {len(audio_data)} bytes of audio ({content_type}), skip_tts={skip_tts}")
 
             if skip_tts:
-                # Fast path: STT + Chat only, no TTS
-                result = process_voice_text_only(audio_data, content_type)
+                # Fast path: SSE streaming STT + Chat
+                ext = ".ogg"
+                if "mp4" in content_type or "aac" in content_type:
+                    ext = ".mp4"
+                elif "wav" in content_type:
+                    ext = ".wav"
+
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+                    f.write(audio_data)
+                    audio_in_path = f.name
+
+                try:
+                    t0 = time.time()
+                    user_text = None
+                    if DEEPGRAM_API_KEY:
+                        try:
+                            user_text = transcribe_deepgram(audio_in_path, content_type)
+                        except Exception as e:
+                            log.warning(f"Deepgram STT failed ({e}), falling back to local whisper")
+
+                    if not user_text or user_text.startswith("[STT ERROR"):
+                        user_text = transcribe_local(audio_in_path)
+
+                    stt_time = round(time.time() - t0, 2)
+                    log.info(f"STT ({stt_time}s): {user_text[:80]}")
+
+                    if user_text.startswith("[STT ERROR") or user_text.startswith("[ERROR"):
+                        self.send_response(200)
+                        self.send_cors_headers()
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Connection", "keep-alive")
+                        self.end_headers()
+                        err_payload = json.dumps({'error': "Sorry, I couldn't understand the audio."})
+                        self.wfile.write(f"data: {err_payload}\n\n".encode())
+                        self.wfile.flush()
+                        return
+
+                    self.send_response(200)
+                    self.send_cors_headers()
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+
+                    # Send the user transcript first
+                    self.wfile.write(f"data: {json.dumps({'text_in': user_text})}\n\n".encode())
+                    self.wfile.flush()
+
+                    chat_text = ""
+                    t_start_chat = time.time()
+                    for chunk in chat_hermes_stream(user_text):
+                        chat_text += chunk
+                        self.wfile.write(f"data: {json.dumps({'text_out_chunk': chunk})}\n\n".encode())
+                        self.wfile.flush()
+
+                    chat_time = round(time.time() - t_start_chat, 2)
+                    log.info(f"Chat streaming completed ({chat_time}s): {chat_text[:80]}")
+
+                    timings = {
+                        "stt": stt_time,
+                        "chat": chat_time,
+                        "total": round(stt_time + chat_time, 2)
+                    }
+                    self.wfile.write(f"data: {json.dumps({'timings': timings, 'done': True})}\n\n".encode())
+                    self.wfile.flush()
+
+                finally:
+                    try:
+                        os.unlink(audio_in_path)
+                    except OSError:
+                        pass
             else:
                 result = process_voice(audio_data, content_type)
 
-            def safe(text, max_len=400):
-                # Strip non-latin-1 chars (HTTP headers are latin-1 only)
-                clean = text.replace("\n", " ").replace("\r", "")
-                clean = clean.encode("ascii", "replace").decode("ascii")
-                return clean[:max_len]
+                def safe(text, max_len=400):
+                    # Strip non-latin-1 chars (HTTP headers are latin-1 only)
+                    clean = text.replace("\n", " ").replace("\r", "")
+                    clean = clean.encode("ascii", "replace").decode("ascii")
+                    return clean[:max_len]
 
-            if skip_tts:
-                # Return JSON with text + timings
-                self._send_json(200, {
-                    "text_in": result["text_in"],
-                    "text_out": result["text_out"],
-                    "timings": result["timings"],
-                })
-            elif result["audio_path"]:
-                audio_bytes = Path(result["audio_path"]).read_bytes()
-                try:
-                    os.unlink(result["audio_path"])
-                except OSError:
-                    pass
+                if result["audio_path"]:
+                    audio_bytes = Path(result["audio_path"]).read_bytes()
+                    try:
+                        os.unlink(result["audio_path"])
+                    except OSError:
+                        pass
 
-                self.send_response(200)
-                self.send_cors_headers()
-                self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("X-Transcript", safe(result["text_in"]))
-                self.send_header("X-Response", safe(result["text_out"]))
-                self.send_header("X-Timings", json.dumps(result["timings"]))
-                self.send_header("Content-Length", str(len(audio_bytes)))
-                self.end_headers()
-                self.wfile.write(audio_bytes)
-            else:
-                self._send_json(200, {
-                    "text_in": result["text_in"],
-                    "text_out": result["text_out"],
-                    "timings": result["timings"],
-                    "has_audio": False,
-                })
+                    self.send_response(200)
+                    self.send_cors_headers()
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("X-Transcript", safe(result["text_in"]))
+                    self.send_header("X-Response", safe(result["text_out"]))
+                    self.send_header("X-Timings", json.dumps(result["timings"]))
+                    self.send_header("Content-Length", str(len(audio_bytes)))
+                    self.end_headers()
+                    self.wfile.write(audio_bytes)
+                else:
+                    self._send_json(200, {
+                        "text_in": result["text_in"],
+                        "text_out": result["text_out"],
+                        "timings": result["timings"],
+                        "has_audio": False,
+                    })
 
         except Exception as e:
             log.exception("Voice handler error")
