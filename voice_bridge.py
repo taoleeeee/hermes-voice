@@ -181,6 +181,8 @@ def chat_hermes_stream(message: str, session_id: str = None):
         "messages": [{"role": "user", "content": message}],
         "stream": True,
     }
+    if VOICE_SYSTEM_PROMPT:
+        payload["messages"].append({"role": "system", "content": VOICE_SYSTEM_PROMPT})
     if session_id:
         headers["X-Hermes-Session-Id"] = session_id
 
