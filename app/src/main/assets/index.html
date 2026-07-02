@@ -315,7 +315,8 @@ body::before {
   font-weight: 600;
 }
 .settings-field input[type="text"],
-.settings-field input[type="number"] {
+.settings-field input[type="number"],
+.settings-field select {
   width: 100%; padding: 12px 14px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
@@ -323,6 +324,10 @@ body::before {
   font-size: 14px; outline: none;
   font-family: inherit;
   transition: border-color 0.2s;
+}
+.settings-field select option {
+  background: #040408;
+  color: #ffffff;
 }
 .settings-field input[type="text"]:focus,
 .settings-field input[type="number"]:focus {
@@ -494,17 +499,47 @@ input:checked + .slider:before {
       <input type="number" id="requestTimeoutInput" placeholder="120000" min="10000" max="300000">
     </div>
 
-    <div class="settings-row">
-      <label for="localTtsToggle">Local TTS (on-device)</label>
-      <label class="switch">
-        <input type="checkbox" id="localTtsToggle">
-        <span class="slider"></span>
-      </label>
+    <div class="settings-field">
+      <label>TTS Engine</label>
+      <select id="ttsModeSelect" onchange="toggleTtsFields()">
+        <option value="system">System TTS (On-Device)</option>
+        <option value="edge">Edge TTS (Voice Bridge Server)</option>
+        <option value="kokoro">Kokoro TTS (Local 82M)</option>
+      </select>
     </div>
 
-    <div class="settings-field">
+    <!-- System TTS specific settings -->
+    <div class="settings-field" id="systemTtsSettings">
       <label>TTS Speed (0.5 - 2.0)</label>
       <input type="number" id="ttsSpeedInput" placeholder="1.1" min="0.5" max="2.0" step="0.1">
+    </div>
+
+    <!-- Kokoro TTS specific settings -->
+    <div id="kokoroTtsSettings" style="display: none;">
+      <div class="settings-field" id="kokoroDownloadArea" style="margin-bottom: 18px;">
+        <label>Kokoro Model Status</label>
+        <button type="button" class="settings-btn" id="kokoroDownloadBtn" onclick="startKokoroDownload()" style="background:#059669;box-shadow: 0 4px 12px rgba(5, 150, 105, 0.25);">Download Model Files (110MB)</button>
+        <div id="kokoroDownloadStatus" style="font-size: 13px; color: #38bdf8; font-weight: 500; display: none;">Ready</div>
+      </div>
+      <div class="settings-field">
+        <label>Kokoro Voice</label>
+        <select id="kokoroVoiceSelect">
+          <option value="af_bella">af_bella (US Female - Bella)</option>
+          <option value="af_sarah">af_sarah (US Female - Sarah)</option>
+          <option value="af_nicole">af_nicole (US Female - Nicole)</option>
+          <option value="af_sky">af_sky (US Female - Sky)</option>
+          <option value="am_adam">am_adam (US Male - Adam)</option>
+          <option value="am_michael">am_michael (US Male - Michael)</option>
+          <option value="bf_emma">bf_emma (UK Female - Emma)</option>
+          <option value="bf_isabella">bf_isabella (UK Female - Isabella)</option>
+          <option value="bm_george">bm_george (UK Male - George)</option>
+          <option value="bm_lewis">bm_lewis (UK Male - Lewis)</option>
+        </select>
+      </div>
+      <div class="settings-field">
+        <label>Kokoro Speed (0.5 - 2.0)</label>
+        <input type="number" id="kokoroSpeedInput" placeholder="1.0" min="0.5" max="2.0" step="0.1">
+      </div>
     </div>
     
     <button class="settings-btn" onclick="saveSettings()">Save</button>
@@ -600,6 +635,7 @@ function toggleRecording() {
 
 function startListening() {
   try {
+    AudioBridge.stopAudio();
     const result = AudioBridge.startRecording();
     if (result === 'ok') {
       state.isRecording = true;
@@ -794,6 +830,64 @@ function endCall() {
   log('Call session ended');
 }
 
+function toggleTtsFields() {
+  const mode = document.getElementById('ttsModeSelect').value;
+  document.getElementById('systemTtsSettings').style.display = (mode === 'system') ? 'block' : 'none';
+  document.getElementById('kokoroTtsSettings').style.display = (mode === 'kokoro') ? 'block' : 'none';
+  
+  if (mode === 'kokoro') {
+    checkKokoroModelStatus();
+  }
+}
+
+function checkKokoroModelStatus() {
+  try {
+    const downloaded = AudioBridge.isKokoroModelDownloaded();
+    const btn = document.getElementById('kokoroDownloadBtn');
+    const status = document.getElementById('kokoroDownloadStatus');
+    if (downloaded) {
+      btn.style.display = 'none';
+      status.style.display = 'block';
+      status.textContent = 'Downloaded & Ready';
+    } else {
+      btn.style.display = 'block';
+      btn.textContent = 'Download Model Files (110MB)';
+      status.style.display = 'none';
+    }
+  } catch(e) {
+    log('Error checking model status: ' + e.message);
+  }
+}
+
+function startKokoroDownload() {
+  try {
+    AudioBridge.downloadKokoroModels();
+  } catch(e) {
+    log('Error starting download: ' + e.message);
+  }
+}
+
+window.onKokoroDownloadProgress = function(file, progress) {
+  document.getElementById('kokoroDownloadBtn').style.display = 'none';
+  const status = document.getElementById('kokoroDownloadStatus');
+  status.style.display = 'block';
+  status.textContent = `${file}: ${progress}%`;
+};
+
+window.onKokoroDownloadComplete = function() {
+  log('Kokoro model files downloaded successfully');
+  document.getElementById('kokoroDownloadStatus').textContent = 'Downloaded & Ready';
+  document.getElementById('kokoroDownloadBtn').style.display = 'none';
+};
+
+window.onKokoroDownloadError = function(err) {
+  log('Kokoro download error: ' + err);
+  const btn = document.getElementById('kokoroDownloadBtn');
+  btn.style.display = 'block';
+  btn.textContent = 'Download Failed (Retry)';
+  document.getElementById('kokoroDownloadStatus').style.display = 'none';
+};
+
 function openSettings() {
   try {
     document.getElementById('bridgeUrlInput').value = AudioBridge.getBridgeUrl();
@@ -801,8 +895,15 @@ function openSettings() {
     document.getElementById('silenceDurationInput').value = AudioBridge.getSilenceDuration();
     document.getElementById('speechThresholdInput').value = AudioBridge.getSpeechThreshold();
     document.getElementById('requestTimeoutInput').value = AudioBridge.getRequestTimeout();
-    document.getElementById('localTtsToggle').checked = AudioBridge.isLocalTtsEnabled();
+    
+    const mode = AudioBridge.getTtsMode();
+    document.getElementById('ttsModeSelect').value = mode;
     document.getElementById('ttsSpeedInput').value = AudioBridge.getTtsSpeed();
+    
+    document.getElementById('kokoroVoiceSelect').value = AudioBridge.getKokoroVoice();
+    document.getElementById('kokoroSpeedInput').value = AudioBridge.getKokoroSpeed();
+    
+    toggleTtsFields();
   } catch(e) {
     log('Failed loading settings to UI: ' + e.message);
   }
@@ -819,8 +920,11 @@ function saveSettings() {
   const silence = parseInt(document.getElementById('silenceDurationInput').value) || 1500;
   const threshold = parseFloat(document.getElementById('speechThresholdInput').value) || 1000;
   const requestTimeout = parseInt(document.getElementById('requestTimeoutInput').value) || 120000;
-  const localTts = document.getElementById('localTtsToggle').checked;
+  
+  const mode = document.getElementById('ttsModeSelect').value;
   const ttsSpeed = parseFloat(document.getElementById('ttsSpeedInput').value) || 1.1;
+  const kokoroVoice = document.getElementById('kokoroVoiceSelect').value;
+  const kokoroSpeed = parseFloat(document.getElementById('kokoroSpeedInput').value) || 1.0;
   
   try {
     if (url) {
@@ -839,9 +943,11 @@ function saveSettings() {
     
     AudioBridge.setRequestTimeout(requestTimeout);
     
-    AudioBridge.setLocalTtsEnabled(localTts);
-    
+    AudioBridge.setTtsMode(mode);
     AudioBridge.setTtsSpeed(ttsSpeed);
+    
+    AudioBridge.setKokoroVoice(kokoroVoice);
+    AudioBridge.setKokoroSpeed(kokoroSpeed);
     
     log('Settings updated successfully');
   } catch(e) {

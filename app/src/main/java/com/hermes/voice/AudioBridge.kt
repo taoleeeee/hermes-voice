@@ -7,6 +7,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import com.k2fsa.sherpa.onnx.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -15,10 +16,11 @@ import java.util.Locale
 class AudioBridge(private val activity: MainActivity, private val webView: WebView) {
 
     private var mediaRecorder: MediaRecorder? = null
-    private var isRecording = false
+    @Volatile private var isRecording = false
     private var recordingThread: Thread? = null
     private var tempAudioFile: java.io.File? = null
     private var currentMimeType = "audio/wav"
+    private var sherpaTts: OfflineTts? = null
 
     private val audioManager: android.media.AudioManager by lazy {
         activity.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -31,7 +33,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     // Android TTS engine
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var ttsEngine = "com.google.android.tts" // Google TTS default
+    private var ttsEngine: String? = null // default to system engine
 
     init {
         initTts()
@@ -96,35 +98,39 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             recordingThread = Thread {
                 var lastAmplitudeUpdate = 0L
                 while (isRecording) {
-                    val maxAmp = mediaRecorder?.maxAmplitude ?: 0
-                    val rms = maxAmp.toDouble()
+                    try {
+                        val maxAmp = mediaRecorder?.maxAmplitude ?: 0
+                        val rms = maxAmp.toDouble()
 
-                    val now = System.currentTimeMillis()
-                    if (now - lastAmplitudeUpdate > 50) {
-                        lastAmplitudeUpdate = now
-                        activity.runOnUiThread {
-                            webView.evaluateJavascript("if (window.onMicVolume) window.onMicVolume($rms);", null)
-                        }
-                    }
-
-                    if (vadEnabled) {
-                        if (rms > speechThreshold) {
-                            if (!hasSpoken) {
-                                hasSpoken = true
-                                activity.runOnUiThread {
-                                    webView.evaluateJavascript("if (window.onSpeechStarted) window.onSpeechStarted();", null)
-                                }
-                            }
-                            lastActiveTime = now
-                        } else if (hasSpoken) {
-                            if (now - lastActiveTime > silenceDurationMs) {
-                                activity.runOnUiThread {
-                                    webView.evaluateJavascript("if (window.onVadSilenceTriggered) window.onVadSilenceTriggered();", null)
-                                }
-                                stopAndSendNativeInternal()
-                                hasSpoken = false
+                        val now = System.currentTimeMillis()
+                        if (now - lastAmplitudeUpdate > 50) {
+                            lastAmplitudeUpdate = now
+                            activity.runOnUiThread {
+                                webView.evaluateJavascript("if (window.onMicVolume) window.onMicVolume($rms);", null)
                             }
                         }
+
+                        if (vadEnabled) {
+                            if (rms > speechThreshold) {
+                                if (!hasSpoken) {
+                                    hasSpoken = true
+                                    activity.runOnUiThread {
+                                        webView.evaluateJavascript("if (window.onSpeechStarted) window.onSpeechStarted();", null)
+                                    }
+                                }
+                                lastActiveTime = now
+                            } else if (hasSpoken) {
+                                if (now - lastActiveTime > silenceDurationMs) {
+                                    activity.runOnUiThread {
+                                        webView.evaluateJavascript("if (window.onVadSilenceTriggered) window.onVadSilenceTriggered();", null)
+                                    }
+                                    stopAndSendNativeInternal()
+                                    hasSpoken = false
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // MediaRecorder might have been stopped/released by another thread
                     }
 
                     try {
@@ -178,27 +184,38 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         isRecording = false
 
         Thread {
+            var fileData: ByteArray? = null
+            var mime: String? = null
             try {
                 recordingThread?.interrupt()
                 recordingThread?.join(2000)
                 mediaRecorder?.stop()
-                mediaRecorder?.release()
+            } catch (e: Exception) {
+                // Log or handle stop exception safely
+            } finally {
+                try {
+                    mediaRecorder?.release()
+                } catch (e: Exception) {}
                 mediaRecorder = null
 
                 val file = tempAudioFile
                 if (file != null && file.exists()) {
-                    val compressedData = file.readBytes()
-                    file.delete()
-                    tempAudioFile = null
-                    sendAudioToBridge(compressedData, currentMimeType)
-                } else {
-                    activity.runOnUiThread {
-                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('No audio recorded file found');", null)
+                    if (file.length() > 0) {
+                        try {
+                            fileData = file.readBytes()
+                            mime = currentMimeType
+                        } catch (e: Exception) {}
                     }
+                    file.delete()
                 }
-            } catch (e: Exception) {
+                tempAudioFile = null
+            }
+
+            if (fileData != null && mime != null) {
+                sendAudioToBridge(fileData, mime)
+            } else {
                 activity.runOnUiThread {
-                    webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('Stop failed: ${e.message}');", null)
+                    webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('No audio recorded file found');", null)
                 }
             }
         }.start()
@@ -240,8 +257,13 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                             val escAssistant = JSONObject.quote(assistantResponse)
                             webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess($escUser, $escAssistant);", null)
 
-                            // Speak locally via Android TTS
-                            speakText(assistantResponse)
+                            // Speak locally via Android TTS or Kokoro Local
+                            val mode = getTtsMode()
+                            if (mode == "kokoro") {
+                                speakKokoroLocal(assistantResponse)
+                            } else {
+                                speakText(assistantResponse)
+                            }
                         }
                     } else {
                         // Legacy mode: server returned audio
@@ -439,17 +461,69 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         }
     }
 
+    private fun routeToSpeaker(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (enabled) {
+                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val speakerDevice = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speakerDevice != null) {
+                    audioManager.setCommunicationDevice(speakerDevice)
+                }
+            } else {
+                val currentDevice = audioManager.communicationDevice
+                if (currentDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    audioManager.clearCommunicationDevice()
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = enabled
+        }
+    }
+
+    private fun routeToBluetooth(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (enabled) {
+                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val bluetoothDevice = devices.find {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                }
+                if (bluetoothDevice != null) {
+                    audioManager.setCommunicationDevice(bluetoothDevice)
+                }
+            } else {
+                val currentDevice = audioManager.communicationDevice
+                if (currentDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    currentDevice?.type == AudioDeviceInfo.TYPE_BLE_HEADSET) {
+                    audioManager.clearCommunicationDevice()
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (enabled) {
+                audioManager.startBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = true
+            } else {
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+            }
+        }
+    }
+
     @JavascriptInterface
     fun setSpeakerEnabled(enabled: Boolean) {
         speakerEnabled = enabled
-        audioManager.isSpeakerphoneOn = enabled
 
         if (enabled) {
             bluetoothEnabled = false
-            audioManager.stopBluetoothSco()
-            audioManager.isBluetoothScoOn = false
+            routeToBluetooth(false)
             audioManager.mode = android.media.AudioManager.MODE_NORMAL
+            routeToSpeaker(true)
         } else {
+            routeToSpeaker(false)
             audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
         }
     }
@@ -459,13 +533,11 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         bluetoothEnabled = enabled
         if (enabled) {
             speakerEnabled = false
-            audioManager.isSpeakerphoneOn = false
+            routeToSpeaker(false)
             audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
-            audioManager.startBluetoothSco()
-            audioManager.isBluetoothScoOn = true
+            routeToBluetooth(true)
         } else {
-            audioManager.stopBluetoothSco()
-            audioManager.isBluetoothScoOn = false
+            routeToBluetooth(false)
             if (!speakerEnabled) {
                 audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
             }
@@ -555,14 +627,20 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     // TTS settings
     @JavascriptInterface
     fun isLocalTtsEnabled(): Boolean {
-        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-        return prefs.getBoolean("local_tts_enabled", true) // default ON
+        val mode = getTtsMode()
+        return mode == "system" || mode == "kokoro"
     }
 
     @JavascriptInterface
-    fun setLocalTtsEnabled(enabled: Boolean) {
+    fun getTtsMode(): String {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("local_tts_enabled", enabled).apply()
+        return prefs.getString("tts_mode", "system") ?: "system"
+    }
+
+    @JavascriptInterface
+    fun setTtsMode(mode: String) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putString("tts_mode", mode).apply()
     }
 
     @JavascriptInterface
@@ -575,6 +653,289 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     fun setTtsSpeed(speed: Float) {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
         prefs.edit().putFloat("tts_speed", speed).apply()
+    }
+
+    @JavascriptInterface
+    fun getKokoroVoice(): String {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getString("kokoro_voice", "af_bella") ?: "af_bella"
+    }
+
+    @JavascriptInterface
+    fun setKokoroVoice(voice: String) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putString("kokoro_voice", voice).apply()
+    }
+
+    @JavascriptInterface
+    fun getKokoroSpeed(): Float {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getFloat("kokoro_speed", 1.0f)
+    }
+
+    @JavascriptInterface
+    fun setKokoroSpeed(speed: Float) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putFloat("kokoro_speed", speed).apply()
+    }
+
+    private fun copyAssetFolder(assetManager: android.content.res.AssetManager, assetPath: String, destPath: String): Boolean {
+        try {
+            val files = assetManager.list(assetPath) ?: return false
+            if (files.isEmpty()) {
+                copyAssetFile(assetManager, assetPath, destPath)
+            } else {
+                val dir = java.io.File(destPath)
+                if (!dir.exists()) dir.mkdirs()
+                for (file in files) {
+                    val subAssetPath = if (assetPath.isEmpty()) file else "$assetPath/$file"
+                    val subDestPath = "$destPath/$file"
+                    copyAssetFolder(assetManager, subAssetPath, subDestPath)
+                }
+            }
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun copyAssetFile(assetManager: android.content.res.AssetManager, assetPath: String, destPath: String) {
+        val destFile = java.io.File(destPath)
+        if (destFile.exists()) return
+        assetManager.open(assetPath).use { inputStream ->
+            java.io.FileOutputStream(destFile).use { outputStream ->
+                val buffer = ByteArray(4096)
+                var bytesRead: Int
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                }
+            }
+        }
+    }
+
+    private fun downloadFile(urlStr: String, destFile: java.io.File, onProgress: (Int) -> Unit) {
+        val url = java.net.URL(urlStr)
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        val responseCode = conn.responseCode
+        if (responseCode != java.net.HttpURLConnection.HTTP_OK) {
+            throw java.io.IOException("Server returned HTTP $responseCode for $urlStr")
+        }
+
+        val contentLength = conn.contentLength
+        var bytesCopied = 0L
+
+        val tempFile = java.io.File(destFile.absolutePath + ".tmp")
+        tempFile.parentFile?.mkdirs()
+
+        conn.inputStream.use { inputStream ->
+            java.io.FileOutputStream(tempFile).use { outputStream ->
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    bytesCopied += bytesRead
+                    if (contentLength > 0) {
+                        val progress = ((bytesCopied * 100) / contentLength).toInt()
+                        onProgress(progress)
+                    }
+                }
+            }
+        }
+        
+        if (destFile.exists()) destFile.delete()
+        tempFile.renameTo(destFile)
+    }
+
+    @JavascriptInterface
+    fun isKokoroModelDownloaded(): Boolean {
+        val kokoroDir = java.io.File(activity.filesDir, "kokoro")
+        val modelFile = java.io.File(kokoroDir, "model.onnx")
+        val voicesFile = java.io.File(kokoroDir, "voices.bin")
+        return modelFile.exists() && modelFile.length() > 10 * 1024 * 1024 &&
+               voicesFile.exists() && voicesFile.length() > 5 * 1024 * 1024
+    }
+
+    @JavascriptInterface
+    fun downloadKokoroModels() {
+        Thread {
+            try {
+                val kokoroDir = java.io.File(activity.filesDir, "kokoro")
+                if (!kokoroDir.exists()) kokoroDir.mkdirs()
+
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onKokoroDownloadProgress) window.onKokoroDownloadProgress('Extracting phonemizer data...', 0);", null)
+                }
+
+                copyAssetFolder(activity.assets, "espeak-ng-data", java.io.File(kokoroDir, "espeak-ng-data").absolutePath)
+                copyAssetFile(activity.assets, "tokens.txt", java.io.File(kokoroDir, "tokens.txt").absolutePath)
+
+                val modelFile = java.io.File(kokoroDir, "model.onnx")
+                if (!modelFile.exists() || modelFile.length() < 10 * 1024 * 1024) {
+                    downloadFile("https://huggingface.co/csukuangfj/sherpa-onnx-tts-kokoro-en-v0.19/resolve/main/model.onnx", modelFile) { progress ->
+                        activity.runOnUiThread {
+                            webView.evaluateJavascript("if (window.onKokoroDownloadProgress) window.onKokoroDownloadProgress('Downloading model.onnx', $progress);", null)
+                        }
+                    }
+                }
+
+                val voicesFile = java.io.File(kokoroDir, "voices.bin")
+                if (!voicesFile.exists() || voicesFile.length() < 5 * 1024 * 1024) {
+                    downloadFile("https://huggingface.co/csukuangfj/sherpa-onnx-tts-kokoro-en-v0.19/resolve/main/voices.bin", voicesFile) { progress ->
+                        activity.runOnUiThread {
+                            webView.evaluateJavascript("if (window.onKokoroDownloadProgress) window.onKokoroDownloadProgress('Downloading voices.bin', $progress);", null)
+                        }
+                    }
+                }
+
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onKokoroDownloadComplete) window.onKokoroDownloadComplete();", null)
+                }
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: "Unknown download error"
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onKokoroDownloadError) window.onKokoroDownloadError('$errorMsg');", null)
+                }
+            }
+        }.start()
+    }
+
+    private fun initSherpaTts() {
+        if (sherpaTts != null) return
+
+        val kokoroDir = java.io.File(activity.filesDir, "kokoro")
+        val modelFile = java.io.File(kokoroDir, "model.onnx")
+        val voicesFile = java.io.File(kokoroDir, "voices.bin")
+        val tokensFile = java.io.File(kokoroDir, "tokens.txt")
+        val dataDir = java.io.File(kokoroDir, "espeak-ng-data")
+
+        if (!modelFile.exists() || !voicesFile.exists() || !tokensFile.exists() || !dataDir.exists()) {
+            throw IllegalStateException("Kokoro model files are missing. Please download them in settings first.")
+        }
+
+        val config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                kokoro = OfflineTtsKokoroModelConfig(
+                    model = modelFile.absolutePath,
+                    voices = voicesFile.absolutePath,
+                    tokens = tokensFile.absolutePath,
+                    dataDir = dataDir.absolutePath,
+                ),
+                numThreads = 2,
+                debug = false
+            )
+        )
+        sherpaTts = OfflineTts(config = config)
+    }
+
+    private fun convertFloatToWav(samples: FloatArray, sampleRate: Int): ByteArray {
+        val pcmData = ByteArray(samples.size * 2)
+        for (i in samples.indices) {
+            val sample = Math.max(-1.0f, Math.min(1.0f, samples[i]))
+            val intSample = (sample * 32767).toInt().toShort()
+            pcmData[i * 2] = (intSample.toInt() and 0xff).toByte()
+            pcmData[i * 2 + 1] = ((intSample.toInt() shr 8) and 0xff).toByte()
+        }
+
+        val totalAudioLen = pcmData.size.toLong()
+        val totalDataLen = totalAudioLen + 36
+        val longSampleRate = sampleRate.toLong()
+        val channels = 1
+        val byteRate = 16 * sampleRate * channels / 8
+
+        val header = ByteArray(44)
+        header[0] = 'R'.toByte()
+        header[1] = 'I'.toByte()
+        header[2] = 'F'.toByte()
+        header[3] = 'F'.toByte()
+        header[4] = (totalDataLen and 0xff).toByte()
+        header[5] = ((totalDataLen shr 8) and 0xff).toByte()
+        header[6] = ((totalDataLen shr 16) and 0xff).toByte()
+        header[7] = ((totalDataLen shr 24) and 0xff).toByte()
+        header[8] = 'W'.toByte()
+        header[9] = 'A'.toByte()
+        header[10] = 'V'.toByte()
+        header[11] = 'E'.toByte()
+        header[12] = 'f'.toByte()
+        header[13] = 'm'.toByte()
+        header[14] = 't'.toByte()
+        header[15] = ' '.toByte()
+        header[16] = 16
+        header[17] = 0
+        header[18] = 0
+        header[19] = 0
+        header[20] = 1
+        header[21] = 0
+        header[22] = channels.toByte()
+        header[23] = 0
+        header[24] = (longSampleRate and 0xff).toByte()
+        header[25] = ((longSampleRate shr 8) and 0xff).toByte()
+        header[26] = ((longSampleRate shr 16) and 0xff).toByte()
+        header[27] = ((longSampleRate shr 24) and 0xff).toByte()
+        header[28] = (byteRate and 0xff).toByte()
+        header[29] = ((byteRate shr 8) and 0xff).toByte()
+        header[30] = ((byteRate shr 16) and 0xff).toByte()
+        header[31] = ((byteRate shr 24) and 0xff).toByte()
+        header[32] = (1 * 16 / 8).toByte()
+        header[33] = 0
+        header[34] = 16
+        header[35] = 0
+        header[36] = 'd'.toByte()
+        header[37] = 'a'.toByte()
+        header[38] = 't'.toByte()
+        header[39] = 'a'.toByte()
+        header[40] = (totalAudioLen and 0xff).toByte()
+        header[41] = ((totalAudioLen shr 8) and 0xff).toByte()
+        header[42] = ((totalAudioLen shr 16) and 0xff).toByte()
+        header[43] = ((totalAudioLen shr 24) and 0xff).toByte()
+
+        val wavFile = ByteArray(44 + pcmData.size)
+        System.arraycopy(header, 0, wavFile, 0, 44)
+        System.arraycopy(pcmData, 0, wavFile, 44, pcmData.size)
+        return wavFile
+    }
+
+    private fun speakKokoroLocal(text: String) {
+        Thread {
+            try {
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
+                }
+
+                initSherpaTts()
+                val tts = sherpaTts ?: throw IllegalStateException("Offline TTS initialization failed")
+
+                val voiceStr = getKokoroVoice()
+                val sid = when (voiceStr) {
+                    "af_bella" -> 0
+                    "af_sarah" -> 1
+                    "af_nicole" -> 2
+                    "af_sky" -> 3
+                    "am_adam" -> 4
+                    "am_michael" -> 5
+                    "bf_emma" -> 6
+                    "bf_isabella" -> 7
+                    "bm_george" -> 8
+                    "bm_lewis" -> 9
+                    "af_julia" -> 10
+                    else -> 0
+                }
+                val speed = getKokoroSpeed()
+
+                val audio = tts.generate(text = text, sid = sid, speed = speed)
+                val wavBytes = convertFloatToWav(audio.samples, audio.sampleRate)
+
+                activity.runOnUiThread {
+                    playAudioBytes(wavBytes)
+                }
+            } catch (e: Exception) {
+                val errorMsg = e.message ?: "Unknown Kokoro TTS error"
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('$errorMsg');", null)
+                }
+            }
+        }.start()
     }
 
     @JavascriptInterface

@@ -65,6 +65,10 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.MODIFY_AUDIO_SETTINGS
         )
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         val needed = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
