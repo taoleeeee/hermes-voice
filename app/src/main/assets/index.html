@@ -565,7 +565,7 @@ input:checked + .slider:before {
   <div class="settings-container">
     <div class="settings-field">
       <label>Bridge Server URL</label>
-      <input type="text" id="bridgeUrlInput" placeholder="http://192.168.1.100:8700">
+      <input type="text" id="bridgeUrlInput" placeholder="http://100.67.204.21:8700">
     </div>
     
     <div class="settings-row">
@@ -632,6 +632,11 @@ input:checked + .slider:before {
         <label>Kokoro Speed (0.5 - 2.0)</label>
         <input type="number" id="kokoroSpeedInput" placeholder="1.0" min="0.5" max="2.0" step="0.1">
       </div>
+      <div class="settings-field">
+        <label>Stream Chunk Size (40 - 300 chars)</label>
+        <input type="number" id="chunkSizeInput" placeholder="120" min="40" max="300" step="10">
+        <div style="font-size:11px;color:#64748b;margin-top:4px;">Smaller = faster response, larger = smoother speech. Default: 120</div>
+      </div>
     </div>
     
     <button class="settings-btn" onclick="saveSettings()">Save</button>
@@ -654,7 +659,7 @@ const state = {
   isMuted: false,
   speakerOn: false,
   bluetoothOn: false,
-  bridgeUrl: 'http://192.168.1.100:8700',
+  bridgeUrl: 'http://100.67.204.21:8700',
   vadEnabled: false,
   silenceDuration: 1500,
   speechThreshold: 1000,
@@ -1149,6 +1154,7 @@ function openSettings() {
     
     document.getElementById('kokoroVoiceSelect').value = AudioBridge.getKokoroVoice();
     document.getElementById('kokoroSpeedInput').value = AudioBridge.getKokoroSpeed();
+    document.getElementById('chunkSizeInput').value = AudioBridge.getChunkSize();
     
     toggleTtsFields();
   } catch(e) {
@@ -1172,6 +1178,7 @@ function saveSettings() {
   const ttsSpeed = parseFloat(document.getElementById('ttsSpeedInput').value) || 1.1;
   const kokoroVoice = document.getElementById('kokoroVoiceSelect').value;
   const kokoroSpeed = parseFloat(document.getElementById('kokoroSpeedInput').value) || 1.0;
+  const chunkSize = parseInt(document.getElementById('chunkSizeInput').value) || 120;
   
   try {
     if (url) {
@@ -1195,6 +1202,7 @@ function saveSettings() {
     
     AudioBridge.setKokoroVoice(kokoroVoice);
     AudioBridge.setKokoroSpeed(kokoroSpeed);
+    AudioBridge.setChunkSize(chunkSize);
     
     log('Settings updated successfully');
   } catch(e) {

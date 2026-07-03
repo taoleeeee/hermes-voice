@@ -317,18 +317,24 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     }
 
     // -----------------------------------------------------------------------
-    // Streaming Kokoro TTS — sentence-by-sentence synthesis over SSE
+    // Streaming Kokoro TTS — 3-thread pipeline for smooth playback
+    // Thread 1: SSE reader (puts text chunks into textQueue)
+    // Thread 2: Kokoro synthesizer (textQueue -> pcmQueue)
+    // Thread 3: AudioTrack playback (pcmQueue -> speaker)
     // -----------------------------------------------------------------------
 
     @Volatile private var isStreamingPlayback = false
-    private val ttsQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray?>()
+    private val textQueue = java.util.concurrent.LinkedBlockingQueue<String?>()   // text chunks from SSE
+    private val pcmQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray?>()  // synthesized PCM
     private var audioTrack: android.media.AudioTrack? = null
+    private var synthesisThread: Thread? = null
 
     private fun sendAudioToBridgeStreaming(audioData: ByteArray, mimeType: String) {
         Thread {
             try {
                 val bridgeUrl = getBridgeUrl()
-                val url = java.net.URL("$bridgeUrl/voice/stream?tts=false")
+                val chunkSize = getChunkSize()
+                val url = java.net.URL("$bridgeUrl/voice/stream?tts=false&chunk_size=$chunkSize")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 10000
@@ -367,13 +373,16 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     return@Thread
                 }
 
-                // Start playback thread (consumes PCM queue)
+                // Start playback thread (consumes pcmQueue, waits for buffer)
                 startQueuePlayback()
+
+                // Start synthesis thread (consumes textQueue, produces pcmQueue)
+                startSynthesisThread(tts)
 
                 var userTranscript = ""
                 val fullResponse = StringBuilder()
 
-                // Read SSE stream
+                // Read SSE stream — just parses events, never blocks on synthesis
                 conn.inputStream.bufferedReader().use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
@@ -402,12 +411,11 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                                             val esc = JSONObject.quote(fullResponse.toString().trim())
                                             webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess(${JSONObject.quote(userTranscript)}, $esc);", null)
                                         }
-                                        // Synthesize this sentence immediately
-                                        synthesizeAndQueue(tts, sentence)
+                                        // Hand off to synthesis thread (non-blocking)
+                                        textQueue.put(sentence)
                                     }
                                 }
                                 "done" -> {
-                                    // Final response — already handled sentence by sentence
                                     val finalText = event.optString("text_out", fullResponse.toString().trim())
                                     Log.i("AudioBridge", "[stream-kokoro] Done: ${finalText.take(80)}")
                                 }
@@ -424,54 +432,70 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     }
                 }
 
-                // Signal playback thread that we're done
-                ttsQueue.put(null)
+                // Signal synthesis thread that we're done
+                textQueue.put(null)
 
             } catch (e: Exception) {
                 val errorMsg = e.message ?: "Unknown error"
                 activity.runOnUiThread {
                     webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
                 }
-                ttsQueue.put(null) // unblock playback thread
+                textQueue.put(null) // unblock synthesis thread
+                pcmQueue.put(null)  // unblock playback thread
             }
         }.start()
     }
 
-    private fun synthesizeAndQueue(tts: OfflineTts, text: String) {
-        try {
-            val voiceStr = getKokoroVoice()
-            // Official sid mapping from sherpa-onnx kokoro-en-v0_19:
-            // 0->af, 1->af_bella, 2->af_nicole, 3->af_sarah, 4->af_sky,
-            // 5->am_adam, 6->am_michael, 7->bf_emma, 8->bf_isabella,
-            // 9->bm_george, 10->bm_lewis
-            val sid = when (voiceStr) {
-                "af_bella" -> 1
-                "af_nicole" -> 2
-                "af_sarah" -> 3
-                "af_sky" -> 4
-                "am_adam" -> 5
-                "am_michael" -> 6
-                "bf_emma" -> 7
-                "bf_isabella" -> 8
-                "bm_george" -> 9
-                "bm_lewis" -> 10
-                else -> 0  // af (default female)
-            }
-            val speed = getKokoroSpeed()
+    // Synthesis thread: takes text from textQueue, synthesizes with Kokoro, puts PCM into pcmQueue
+    private fun startSynthesisThread(tts: OfflineTts) {
+        synthesisThread = Thread {
+            try {
+                val voiceStr = getKokoroVoice()
+                val sid = when (voiceStr) {
+                    "af_bella" -> 1
+                    "af_nicole" -> 2
+                    "af_sarah" -> 3
+                    "af_sky" -> 4
+                    "am_adam" -> 5
+                    "am_michael" -> 6
+                    "bf_emma" -> 7
+                    "bf_isabella" -> 8
+                    "bm_george" -> 9
+                    "bm_lewis" -> 10
+                    else -> 0  // af (default female)
+                }
+                val speed = getKokoroSpeed()
 
-            val audio = tts.generate(text = text, sid = sid, speed = speed)
-            // Convert float samples to PCM16 bytes directly (no WAV header needed for AudioTrack)
-            val pcmData = ByteArray(audio.samples.size * 2)
-            for (i in audio.samples.indices) {
-                val sample = Math.max(-1.0f, Math.min(1.0f, audio.samples[i]))
-                val intSample = (sample * 32767).toInt().toShort()
-                pcmData[i * 2] = (intSample.toInt() and 0xff).toByte()
-                pcmData[i * 2 + 1] = ((intSample.toInt() shr 8) and 0xff).toByte()
+                while (true) {
+                    val text = textQueue.take() // blocks until available
+                    if (text == null) break     // null = done signal
+
+                    try {
+                        val t0 = System.currentTimeMillis()
+                        val audio = tts.generate(text = text, sid = sid, speed = speed)
+                        val synthTime = System.currentTimeMillis() - t0
+
+                        // Convert float samples to PCM16 bytes
+                        val pcmData = ByteArray(audio.samples.size * 2)
+                        for (i in audio.samples.indices) {
+                            val sample = Math.max(-1.0f, Math.min(1.0f, audio.samples[i]))
+                            val intSample = (sample * 32767).toInt().toShort()
+                            pcmData[i * 2] = (intSample.toInt() and 0xff).toByte()
+                            pcmData[i * 2 + 1] = ((intSample.toInt() shr 8) and 0xff).toByte()
+                        }
+                        Log.d("AudioBridge", "[kokoro-synth] '${text.take(40)}...' in ${synthTime}ms -> ${pcmData.size} bytes")
+                        pcmQueue.put(pcmData)
+                    } catch (e: Exception) {
+                        Log.e("AudioBridge", "[kokoro-synth] Error: ${e.message}")
+                    }
+                }
+                // Signal playback thread that we're done
+                pcmQueue.put(null)
+            } catch (e: Exception) {
+                Log.e("AudioBridge", "[kokoro-synth] Thread error: ${e.message}")
+                pcmQueue.put(null)
             }
-            ttsQueue.put(pcmData)
-        } catch (e: Exception) {
-            Log.e("AudioBridge", "[kokoro] Synth error: ${e.message}")
-        }
+        }.apply { name = "kokoro-synth"; start() }
     }
 
     private fun startQueuePlayback() {
@@ -509,11 +533,38 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     .build()
 
                 audioTrack = track
+
+                // Buffer-ahead: wait for first chunk before starting playback
+                // This prevents AudioTrack underruns on the first chunk
+                val firstPcm = pcmQueue.take() // blocks until first chunk is synthesized
+                if (firstPcm == null) {
+                    // Done signal before any audio — nothing to play
+                    track.release()
+                    audioTrack = null
+                    activity.runOnUiThread {
+                        webView.evaluateJavascript("if (window.onAudioPlayCompleted) window.onAudioPlayCompleted();", null)
+                    }
+                    isStreamingPlayback = false
+                    return@Thread
+                }
+
+                // Pre-buffer: try to grab one more chunk if available (non-blocking)
+                val bufferedChunks = mutableListOf(firstPcm)
+                val extraChunk = pcmQueue.poll() // non-blocking
+                if (extraChunk != null) bufferedChunks.add(extraChunk)
+
+                // Start playback
                 track.play()
 
+                // Write buffered chunks first
+                for (pcm in bufferedChunks) {
+                    track.write(pcm, 0, pcm.size)
+                }
+
+                // Continue consuming from queue
                 while (true) {
-                    val pcm = ttsQueue.take() // blocks until available
-                    if (pcm == null) break // null = done signal
+                    val pcm = pcmQueue.take() // blocks until available
+                    if (pcm == null) break    // null = done signal
                     track.write(pcm, 0, pcm.size)
                 }
 
@@ -533,9 +584,10 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 }
             } finally {
                 isStreamingPlayback = false
-                ttsQueue.clear()
+                textQueue.clear()
+                pcmQueue.clear()
             }
-        }.start()
+        }.apply { name = "kokoro-playback"; start() }
     }
 
     // -----------------------------------------------------------------------
@@ -580,9 +632,11 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     @JavascriptInterface
     fun stopSpeaking() {
         tts?.stop()
-        // Stop streaming Kokoro playback
-        ttsQueue.clear()
-        ttsQueue.put(null) // unblock playback thread
+        // Stop streaming Kokoro playback — clear all queues
+        textQueue.clear()
+        textQueue.put(null)  // unblock synthesis thread
+        pcmQueue.clear()
+        pcmQueue.put(null)   // unblock playback thread
         try {
             audioTrack?.pause()
             audioTrack?.flush()
@@ -819,7 +873,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     @JavascriptInterface
     fun getBridgeUrl(): String {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-        return prefs.getString("bridge_url", "http://192.168.1.100:8700") ?: "http://192.168.1.100:8700"
+        return prefs.getString("bridge_url", "http://100.67.204.21:8700") ?: "http://100.67.204.21:8700"
     }
 
     @JavascriptInterface
@@ -936,6 +990,18 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         prefs.edit().putFloat("kokoro_speed", speed).apply()
     }
 
+    @JavascriptInterface
+    fun getChunkSize(): Int {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getInt("chunk_size", 120)
+    }
+
+    @JavascriptInterface
+    fun setChunkSize(size: Int) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt("chunk_size", size.coerceIn(40, 300)).apply()
+    }
+
     private fun copyAssetFolder(assetManager: android.content.res.AssetManager, assetPath: String, destPath: String): Boolean {
         try {
             val files = assetManager.list(assetPath) ?: return false
@@ -1029,7 +1095,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 copyAssetFile(activity.assets, "tokens.txt", java.io.File(kokoroDir, "tokens.txt").absolutePath)
 
                 val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-                val bridgeUrl = prefs.getString("bridge_url", "http://192.168.1.100:8700") ?: "http://192.168.1.100:8700"
+                val bridgeUrl = prefs.getString("bridge_url", "http://100.67.204.21:8700") ?: "http://100.67.204.21:8700"
                 val modelFile = java.io.File(kokoroDir, "model.onnx")
                 if (!modelFile.exists() || modelFile.length() < 10 * 1024 * 1024) {
                     downloadFile("$bridgeUrl/kokoro/model.onnx", modelFile) { progress ->
