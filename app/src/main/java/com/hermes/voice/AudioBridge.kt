@@ -334,14 +334,17 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     private var pcmQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray?>()  // synthesized PCM
     private var audioTrack: android.media.AudioTrack? = null
     private var synthesisThread: Thread? = null
+    // Sentinel values (null not allowed in BlockingQueue)
+    private val DONE_SENTENCE = "\u0000DONE\u0000"
+    private val DONE_PCM = ByteArray(0)
 
     // Stop any in-flight streaming pipeline and reset queues
     private fun resetStreamingPipeline() {
-        // Signal old threads to stop
+        // Signal old threads to stop using empty-byte-array sentinel (null not allowed in BlockingQueue)
         textQueue.clear()
-        textQueue.put(null)
+        textQueue.offer(DONE_SENTENCE)
         pcmQueue.clear()
-        pcmQueue.put(null)
+        pcmQueue.offer(DONE_PCM)
         try {
             audioTrack?.pause()
             audioTrack?.flush()
@@ -462,15 +465,15 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 }
 
                 // Signal synthesis thread that we're done
-                textQueue.put(null)
+                textQueue.put(DONE_SENTENCE)
 
             } catch (e: Exception) {
                 val errorMsg = e.message ?: "Unknown error"
                 activity.runOnUiThread {
                     webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
                 }
-                textQueue.put(null) // unblock synthesis thread
-                pcmQueue.put(null)  // unblock playback thread
+                textQueue.put(DONE_SENTENCE) // unblock synthesis thread
+                pcmQueue.put(DONE_PCM)  // unblock playback thread
             }
         }.start()
     }
@@ -510,7 +513,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 var chunkIndex = 0
                 while (true) {
                     val text = myTextQueue.take() // blocks until available
-                    if (text == null) break       // null = done signal
+                    if (text == null || text == DONE_SENTENCE) break // done signal
 
                     try {
                         val t0 = System.currentTimeMillis()
@@ -533,10 +536,10 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     }
                 }
                 // Signal playback thread that we're done
-                myPcmQueue.put(null)
+                myPcmQueue.put(DONE_PCM)
             } catch (e: Exception) {
                 Log.e("AudioBridge", "[kokoro-synth] Thread error: ${e.message}")
-                myPcmQueue.put(null)
+                myPcmQueue.put(DONE_PCM)
             }
         }.apply { name = "kokoro-synth"; start() }
     }
@@ -610,7 +613,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 // Continue consuming from queue
                 while (true) {
                     val pcm = myPcmQueue.take() // blocks until available
-                    if (pcm == null) break      // null = done signal
+                    if (pcm == null || pcm.isEmpty()) break // done signal
                     track.write(pcm, 0, pcm.size)
                 }
 
@@ -680,9 +683,9 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         tts?.stop()
         // Stop streaming Kokoro playback — clear all queues
         textQueue.clear()
-        textQueue.put(null)  // unblock synthesis thread
+        textQueue.put(DONE_SENTENCE)  // unblock synthesis thread
         pcmQueue.clear()
-        pcmQueue.put(null)   // unblock playback thread
+        pcmQueue.put(DONE_PCM)   // unblock playback thread
         try {
             audioTrack?.pause()
             audioTrack?.flush()
