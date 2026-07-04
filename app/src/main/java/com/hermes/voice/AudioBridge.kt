@@ -327,21 +327,41 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     }
                 }
 
-                // Phase 2: Synthesize each sentence with Deepgram and play
+                // Phase 2: Synthesize with Deepgram, split by chunk size
                 if (fullResponse.isNotEmpty()) {
                     val text = fullResponse.toString().trim()
+                    val chunkSize = getDeepgramChunkSize()
                     activity.runOnUiThread {
                         webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
                     }
-                    Log.i("AudioBridge", "[deepgram] Playing ${text.length} chars")
 
-                    val audioBytes = ttsDeepgram(text, voice, apiKey)
-                    if (audioBytes != null && audioBytes.isNotEmpty()) {
-                        playAudioBytesStreaming(audioBytes)
+                    if (text.length <= chunkSize) {
+                        // Single chunk
+                        Log.i("AudioBridge", "[deepgram] Single: ${text.length} chars")
+                        val audioBytes = ttsDeepgram(text, voice, apiKey)
+                        if (audioBytes != null && audioBytes.isNotEmpty()) {
+                            playAudioBytesStreaming(audioBytes)
+                        } else {
+                            Log.e("AudioBridge", "[deepgram] TTS null/empty")
+                            activity.runOnUiThread {
+                                webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed');", null)
+                            }
+                        }
                     } else {
-                        Log.e("AudioBridge", "[deepgram] TTS returned null/empty")
-                        activity.runOnUiThread {
-                            webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed - check API key');", null)
+                        // Multiple chunks
+                        val chunks = splitForDeepgram(text, chunkSize)
+                        Log.i("AudioBridge", "[deepgram] ${chunks.size} chunks (${chunkSize} chars each)")
+                        for ((i, chunk) in chunks.withIndex()) {
+                            Log.d("AudioBridge", "[deepgram] Chunk ${i+1}/${chunks.size}: ${chunk.length} chars")
+                            val audioBytes = ttsDeepgram(chunk, voice, apiKey)
+                            if (audioBytes != null && audioBytes.isNotEmpty()) {
+                                playAudioBytesStreaming(audioBytes)
+                            } else {
+                                Log.e("AudioBridge", "[deepgram] Chunk ${i+1} failed")
+                                activity.runOnUiThread {
+                                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed on chunk ${i+1}');", null)
+                                }
+                            }
                         }
                     }
                 }
@@ -1160,6 +1180,18 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     fun setDeepgramVoice(voice: String) {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
         prefs.edit().putString("deepgram_voice", voice).apply()
+    }
+
+    @JavascriptInterface
+    fun getDeepgramChunkSize(): Int {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        return prefs.getInt("deepgram_chunk_size", 200)
+    }
+
+    @JavascriptInterface
+    fun setDeepgramChunkSize(size: Int) {
+        val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
+        prefs.edit().putInt("deepgram_chunk_size", size.coerceIn(50, 2000)).apply()
     }
 
     private fun ttsDeepgram(text: String, voice: String, apiKey: String): ByteArray? {
