@@ -1266,6 +1266,10 @@ function log(msg) {
   const time = new Date().toLocaleTimeString();
   el.innerHTML += '<div>[' + time + '] ' + msg + '</div>';
   el.scrollTop = el.scrollHeight;
+  // Auto-show debug log on errors
+  if (msg.includes('ERROR') || msg.includes('Deepgram')) {
+    el.classList.add('visible');
+  }
   console.log('[HermesVoice]', msg);
 }
 
