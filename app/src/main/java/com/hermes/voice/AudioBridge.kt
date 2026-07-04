@@ -327,40 +327,21 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                     }
                 }
 
-                // Phase 2: Synthesize full response with Deepgram and play
-                val text = fullResponse.toString().trim()
-                if (text.isNotEmpty()) {
+                // Phase 2: Synthesize each sentence with Deepgram and play
+                if (fullResponse.isNotEmpty()) {
+                    val text = fullResponse.toString().trim()
                     activity.runOnUiThread {
                         webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
                     }
+                    Log.i("AudioBridge", "[deepgram] Playing ${text.length} chars")
 
-                    if (text.length <= 2000) {
-                        // Short response: single Deepgram request, gapless audio
-                        Log.i("AudioBridge", "[deepgram] Single request: ${text.length} chars")
-                        val audioBytes = ttsDeepgram(text, voice, apiKey)
-                        if (audioBytes != null && audioBytes.isNotEmpty()) {
-                            playAudioBytesStreaming(audioBytes)
-                        } else {
-                            Log.e("AudioBridge", "[deepgram] TTS returned null/empty for ${text.length} chars")
-                            activity.runOnUiThread {
-                                webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed - no audio returned');", null)
-                            }
-                        }
+                    val audioBytes = ttsDeepgram(text, voice, apiKey)
+                    if (audioBytes != null && audioBytes.isNotEmpty()) {
+                        playAudioBytesStreaming(audioBytes)
                     } else {
-                        // Long response: split into ~1800-char chunks at sentence boundaries
-                        val chunks = splitForDeepgram(text, 1800)
-                        Log.i("AudioBridge", "[deepgram] ${chunks.size} chunks for ${text.length} chars")
-                        for ((i, chunk) in chunks.withIndex()) {
-                            Log.d("AudioBridge", "[deepgram] Chunk ${i+1}/${chunks.size}: ${chunk.length} chars")
-                            val audioBytes = ttsDeepgram(chunk, voice, apiKey)
-                            if (audioBytes != null && audioBytes.isNotEmpty()) {
-                                playAudioBytesStreaming(audioBytes)
-                            } else {
-                                Log.e("AudioBridge", "[deepgram] TTS failed for chunk ${i+1}")
-                                activity.runOnUiThread {
-                                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed on chunk ${i+1}');", null)
-                                }
-                            }
+                        Log.e("AudioBridge", "[deepgram] TTS returned null/empty")
+                        activity.runOnUiThread {
+                            webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed - check API key');", null)
                         }
                     }
                 }
