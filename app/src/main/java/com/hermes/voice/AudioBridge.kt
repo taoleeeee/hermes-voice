@@ -360,8 +360,8 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 }
 
             } catch (e: Exception) {
+                Log.e("AudioBridge", "[deepgram-bridge] Exception: ${e.javaClass.simpleName}: ${e.message}", e)
                 val errorMsg = (e.message ?: "Unknown error").replace("'", "\\'").take(200)
-                Log.e("AudioBridge", "sendAudioToBridgeForText error: $errorMsg")
                 activity.runOnUiThread {
                     webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
                 }
@@ -1171,14 +1171,16 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         prefs.edit().putString("deepgram_voice", voice).apply()
     }
 
-    private fun ttsDeepgram(text: String, voice: String, apiKey: String): ByteArray? {
+    private fun ttsDeepgram(text: String, voice: String, apiKey: *** ByteArray? {
         try {
+            Log.i("AudioBridge", "[deepgram-tts] Sending ${text.length} chars, voice=$voice")
             val url = java.net.URL("https://api.deepgram.com/v1/speak?model=$voice&encoding=linear16&sample_rate=24000")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.connectTimeout = 10000
-            conn.readTimeout = 30000
+            conn.readTimeout = 60000
             conn.doOutput = true
+            conn.doInput = true
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Authorization", "Token $apiKey")
 
@@ -1186,15 +1188,17 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             body.put("text", text)
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
 
-            if (conn.responseCode != 200) {
-                Log.e("AudioBridge", "[deepgram-tts] HTTP \${conn.responseCode}")
+            val code = conn.responseCode
+            if (code != 200) {
+                val errBody = conn.errorStream?.use { String(it.readBytes()) } ?: ""
+                Log.e("AudioBridge", "[deepgram-tts] HTTP $code: $errBody")
                 return null
             }
             val audio = conn.inputStream.use { it.readBytes() }
-            Log.d("AudioBridge", "[deepgram-tts] \${text.take(40)}... -> \${audio.size} bytes")
+            Log.i("AudioBridge", "[deepgram-tts] OK: ${text.take(40)}... -> ${audio.size} bytes")
             return audio
         } catch (e: Exception) {
-            Log.e("AudioBridge", "[deepgram-tts] Error: \${e.message}")
+            Log.e("AudioBridge", "[deepgram-tts] Exception: ${e.javaClass.simpleName}: ${e.message}")
             return null
         }
     }
