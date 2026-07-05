@@ -1215,7 +1215,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             activity.runOnUiThread {
                 webView.evaluateJavascript("if (window.log) window.log('${msg}');", null)
             }
-            val url = java.net.URL("https://api.deepgram.com/v1/speak?model=$voice&encoding=linear16&sample_rate=24000")
+            val url = java.net.URL("https://api.deepgram.com/v1/speak?model=$voice&encoding=linear16&sample_rate=24000&container=none")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.connectTimeout = 10000
@@ -1291,7 +1291,27 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         audioTrack = track
         track.play()
         track.write(audioBytes, 0, audioBytes.size)
-        Thread.sleep(100)
+
+        // Wait until playback of all written frames is finished
+        val totalFrames = audioBytes.size / 2
+        val startWaitTime = System.currentTimeMillis()
+        val maxWaitTime = (totalFrames * 1000L) / sampleRate + 2000L // 2 seconds leeway
+        while (track.playbackHeadPosition < totalFrames) {
+            if (System.currentTimeMillis() - startWaitTime > maxWaitTime) {
+                Log.w("AudioBridge", "[deepgram-playback] Timeout waiting for playback to finish")
+                break
+            }
+            try {
+                Thread.sleep(50)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+        // Small extra sleep to let the final frame play out completely
+        try {
+            Thread.sleep(50)
+        } catch (_: InterruptedException) {}
+
         track.stop()
         track.release()
         audioTrack = null
