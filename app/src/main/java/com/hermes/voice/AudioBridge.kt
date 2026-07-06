@@ -1158,7 +1158,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     @JavascriptInterface
     fun getDeepgramChunkSize(): Int {
         val prefs = activity.getSharedPreferences("hermes_voice", android.content.Context.MODE_PRIVATE)
-        return prefs.getInt("deepgram_chunk_size", 200)
+        return prefs.getInt("deepgram_chunk_size", 2000)
     }
 
     @JavascriptInterface
