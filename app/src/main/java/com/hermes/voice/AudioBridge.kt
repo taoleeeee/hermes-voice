@@ -239,12 +239,13 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
         }.start()
     }
 
-    // Deepgram TTS: buffer full response, synthesize as one request, stream audio
+    // Deepgram TTS: use non-streaming bridge endpoint, then synthesize with Deepgram
     private fun sendAudioToBridgeForText(audioData: ByteArray, mimeType: String) {
         Thread {
             try {
                 val bridgeUrl = getBridgeUrl()
-                val url = java.net.URL("$bridgeUrl/voice/stream?tts=false")
+                // Use non-streaming endpoint - returns JSON and closes connection immediately
+                val url = java.net.URL("$bridgeUrl/voice?tts=false")
                 val conn = url.openConnection() as java.net.HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 10000
@@ -260,121 +261,79 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
 
                 val responseCode = conn.responseCode
                 if (responseCode != 200) {
-                    val errorMsg = "Stream returned code $responseCode"
+                    val errorMsg = "Bridge returned code $responseCode"
+                    Log.e("AudioBridge", "[deepgram] $errorMsg")
                     activity.runOnUiThread {
                         webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
                     }
                     return@Thread
                 }
 
-                val apiKey = getDeepgramApiKey()
+                // Read the complete JSON response (connection closes immediately after)
+                val responseBody = conn.inputStream.use { String(it.readBytes()) }
+                val json = org.json.JSONObject(responseBody)
+                val userTranscript = json.optString("text_in", "")
+                val assistantText = json.optString("text_out", "")
+
+                Log.i("AudioBridge", "[deepgram] Bridge response: ${assistantText.length} chars")
+
+                // Show user what was said
                 activity.runOnUiThread {
-                    val keyStatus = if (apiKey.isEmpty()) "EMPTY - NOT SET" else "SET (${apiKey.take(4)}...)"
-                    webView.evaluateJavascript("if (window.log) window.log('[Deepgram] API Key: $keyStatus');", null)
-                    webView.evaluateJavascript("if (window.log) window.log('[Deepgram] Voice: ${getDeepgramVoice()}');", null)
+                    val escUser = org.json.JSONObject.quote(userTranscript)
+                    val escAsst = org.json.JSONObject.quote(assistantText)
+                    webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess($escUser, $escAsst);", null)
                 }
-                if (apiKey.isEmpty()) {
-                    val errorMsg = "Deepgram API key not set - go to Settings"
+
+                if (assistantText.isEmpty()) {
+                    Log.e("AudioBridge", "[deepgram] No text in bridge response")
                     activity.runOnUiThread {
-                        webView.evaluateJavascript("if (window.log) window.log('[Deepgram] ERROR: $errorMsg');", null)
-                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
+                        webView.evaluateJavascript("if (window.onAudioPlayCompleted) window.onAudioPlayCompleted();", null)
+                    }
+                    return@Thread
+                }
+
+                // Check API key
+                val apiKey = getDeepgramApiKey()
+                if (apiKey.isEmpty()) {
+                    Log.e("AudioBridge", "[deepgram] API key empty")
+                    activity.runOnUiThread {
+                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('Deepgram API key not set');", null)
                     }
                     return@Thread
                 }
 
                 val voice = getDeepgramVoice()
-                var userTranscript = ""
-                val fullResponse = StringBuilder()
+                Log.i("AudioBridge", "[deepgram] Key: ${apiKey.take(4)}..., Voice: $voice")
 
-                // Phase 1: Buffer the full response from SSE stream
-                conn.inputStream.bufferedReader().use { reader ->
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val l = line ?: continue
-                        if (!l.startsWith("data: ")) continue
+                // Show speaking status
+                activity.runOnUiThread {
+                    webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
+                }
 
-                        val jsonStr = l.removePrefix("data: ").trim()
-                        if (jsonStr.isEmpty()) continue
-
-                        try {
-                            val event = org.json.JSONObject(jsonStr)
-                            when (event.optString("event")) {
-                                "transcript" -> {
-                                    userTranscript = event.optString("text", "")
-                                    activity.runOnUiThread {
-                                        val esc = org.json.JSONObject.quote(userTranscript)
-                                        webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess($esc, '');", null)
-                                    }
-                                }
-                                "sentence" -> {
-                                    val sentence = event.optString("text", "").trim()
-                                    if (sentence.isNotEmpty()) {
-                                        fullResponse.append(sentence).append(" ")
-                                        // Update UI with growing response text
-                                        activity.runOnUiThread {
-                                            val esc = org.json.JSONObject.quote(fullResponse.toString().trim())
-                                            webView.evaluateJavascript("if (window.onBridgeSuccess) window.onBridgeSuccess(${org.json.JSONObject.quote(userTranscript)}, $esc);", null)
-                                        }
-                                    }
-                                }
-                                "done" -> {
-                                    Log.i("AudioBridge", "[deepgram-buffer] Done buffering: ${fullResponse.toString().trim().take(80)}")
-                                }
-                                "error" -> {
-                                    val errText = event.optString("text", "Unknown error")
-                                    activity.runOnUiThread {
-                                        webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errText');", null)
-                                    }
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.w("AudioBridge", "[deepgram-buffer] Parse error: $e")
+                // Synthesize with Deepgram - split if needed
+                val chunkSize = getDeepgramChunkSize()
+                if (assistantText.length <= chunkSize) {
+                    Log.i("AudioBridge", "[deepgram] Single request: ${assistantText.length} chars")
+                    val audioBytes = ttsDeepgram(assistantText, voice, apiKey)
+                    if (audioBytes != null && audioBytes.isNotEmpty()) {
+                        playAudioBytesStreaming(audioBytes)
+                    } else {
+                        Log.e("AudioBridge", "[deepgram] TTS returned null/empty")
+                        activity.runOnUiThread {
+                            webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed');", null)
                         }
                     }
-                }
-
-                // Debug: confirm we exited the SSE stream
-                activity.runOnUiThread {
-                    webView.evaluateJavascript("if (window.log) window.log('[Deepgram] SSE ended. Response length: ${fullResponse.length}');", null)
-                }
-
-                // Phase 2: Synthesize with Deepgram, split by chunk size
-                val text = fullResponse.toString().trim()
-                val chunkSize = getDeepgramChunkSize()
-                activity.runOnUiThread {
-                    webView.evaluateJavascript("if (window.log) window.log('[Deepgram] Phase 2: ${text.length} chars, chunk=$chunkSize, key=${apiKey.take(4)}...');", null)
-                }
-                if (text.isNotEmpty()) {
-                    activity.runOnUiThread {
-                        webView.evaluateJavascript("if (window.onAudioPlayStarted) window.onAudioPlayStarted();", null)
-                    }
-
-                    if (text.length <= chunkSize) {
-                        // Single chunk
-                        Log.i("AudioBridge", "[deepgram] Single: ${text.length} chars")
-                        val audioBytes = ttsDeepgram(text, voice, apiKey)
+                } else {
+                    val chunks = splitForDeepgram(assistantText, chunkSize)
+                    Log.i("AudioBridge", "[deepgram] ${chunks.size} chunks (${chunkSize} chars each)")
+                    for ((i, chunk) in chunks.withIndex()) {
+                        val audioBytes = ttsDeepgram(chunk, voice, apiKey)
                         if (audioBytes != null && audioBytes.isNotEmpty()) {
                             playAudioBytesStreaming(audioBytes)
                         } else {
-                            Log.e("AudioBridge", "[deepgram] TTS null/empty")
+                            Log.e("AudioBridge", "[deepgram] Chunk ${i+1} failed")
                             activity.runOnUiThread {
-                                webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed');", null)
-                            }
-                        }
-                    } else {
-                        // Multiple chunks
-                        val chunks = splitForDeepgram(text, chunkSize)
-                        Log.i("AudioBridge", "[deepgram] ${chunks.size} chunks (${chunkSize} chars each)")
-                        for ((i, chunk) in chunks.withIndex()) {
-                            Log.d("AudioBridge", "[deepgram] Chunk ${i+1}/${chunks.size}: ${chunk.length} chars")
-                            val audioBytes = ttsDeepgram(chunk, voice, apiKey)
-                            if (audioBytes != null && audioBytes.isNotEmpty()) {
-                                playAudioBytesStreaming(audioBytes)
-                            } else {
-                                Log.e("AudioBridge", "[deepgram] Chunk ${i+1} failed")
-                                activity.runOnUiThread {
-                                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed on chunk ${i+1}');", null)
-                                }
+                                webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('Deepgram TTS failed on chunk ${i+1}');", null)
                             }
                         }
                     }
@@ -385,7 +344,7 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
                 }
 
             } catch (e: Exception) {
-                Log.e("AudioBridge", "[deepgram-bridge] Exception: ${e.javaClass.simpleName}: ${e.message}", e)
+                Log.e("AudioBridge", "[deepgram] Exception: ${e.javaClass.simpleName}: ${e.message}", e)
                 val errorMsg = (e.message ?: "Unknown error").replace("'", "\\'").take(200)
                 activity.runOnUiThread {
                     webView.evaluateJavascript("if (window.onBridgeError) window.onBridgeError('$errorMsg');", null)
