@@ -1168,12 +1168,8 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
     }
 
     private fun ttsDeepgram(text: String, voice: String, apiKey: String): ByteArray? {
-        val msg = StringBuilder()
         try {
-            msg.append("TTS: ${text.length} chars, voice=$voice, key=${apiKey.take(4)}...")
-            activity.runOnUiThread {
-                webView.evaluateJavascript("if (window.log) window.log('${msg}');", null)
-            }
+            Log.i("AudioBridge", "[deepgram-tts] ${text.length} chars, voice=$voice")
             val url = java.net.URL("https://api.deepgram.com/v1/speak?model=$voice&encoding=linear16&sample_rate=24000&container=none")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
@@ -1191,27 +1187,14 @@ class AudioBridge(private val activity: MainActivity, private val webView: WebVi
             val code = conn.responseCode
             if (code != 200) {
                 val errBody = conn.errorStream?.use { String(it.readBytes()) } ?: ""
-                val errMsg = "HTTP $code: $errBody"
-                Log.e("AudioBridge", "[deepgram-tts] $errMsg")
-                activity.runOnUiThread {
-                    webView.evaluateJavascript("if (window.log) window.log('[Deepgram] ERROR: $errMsg');", null)
-                    webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('$errMsg');", null)
-                }
+                Log.e("AudioBridge", "[deepgram-tts] HTTP $code: $errBody")
                 return null
             }
             val audio = conn.inputStream.use { it.readBytes() }
             Log.i("AudioBridge", "[deepgram-tts] OK: ${audio.size} bytes")
-            activity.runOnUiThread {
-                webView.evaluateJavascript("if (window.log) window.log('[Deepgram] OK: ${audio.size} bytes audio');", null)
-            }
             return audio
         } catch (e: Exception) {
-            val errMsg = "${e.javaClass.simpleName}: ${e.message}"
-            Log.e("AudioBridge", "[deepgram-tts] $errMsg")
-            activity.runOnUiThread {
-                webView.evaluateJavascript("if (window.log) window.log('[Deepgram] ERROR: $errMsg');", null)
-                webView.evaluateJavascript("if (window.onAudioError) window.onAudioError('$errMsg');", null)
-            }
+            Log.e("AudioBridge", "[deepgram-tts] ${e.javaClass.simpleName}: ${e.message}")
             return null
         }
     }
